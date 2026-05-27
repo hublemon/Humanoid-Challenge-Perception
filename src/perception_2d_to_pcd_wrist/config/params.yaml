@@ -1,0 +1,125 @@
+# =====================================================================
+# perception_2d_to_pcd_wrist parameters (RealSense right camera)
+#
+# Wrist RGB and depth are UNALIGNED:
+#   RGB   : 424x240, frame camera_right_color_optical_frame
+#   Depth : 480x270, frame camera_right_depth_optical_frame
+# Depth is re-projected into the RGB image plane before mask filtering.
+# Extrinsics (depth->color) come from TF when available, else the fixed
+# values below (measured on this robot).
+# =====================================================================
+
+# ---- common extrinsics fallback (depth -> color), row-major rotation ----
+# Reused by all three node sections below.
+
+wrist_projection_node:
+  ros__parameters:
+    rgb_topic: "/camera_right/camera_right/color/image_rect_raw"
+    depth_topic: "/camera_right/camera_right/depth/image_rect_raw"
+    rgb_info_topic: "/camera_right/camera_right/color/camera_info"
+    depth_info_topic: "/camera_right/camera_right/depth/camera_info"
+    detections_topic: "/detections"
+
+    out_pose_topic: "/perception/wrist/target_pose"
+    out_rgb_topic: "/perception/wrist/rgb"
+    out_depth_topic: "/perception/wrist/depth"
+
+    base_frame: "base_link" #"leader_arm_base_link"
+    rgb_frame: ""        # empty -> from color camera_info header
+    depth_frame: ""      # empty -> from depth camera_info header
+    camera_name: "wrist_right"
+    use_latest_tf_on_zero_stamp: true
+
+    depth_scale: 0.001
+    invalid_depth_values: [0, 65535]
+    min_depth_m: 0.1
+    max_depth_m: 3.0
+
+    use_tf_for_extrinsics: true
+    extrinsics_rotation: [0.9999939203262329, -0.0015899674035608768, -0.003109483979642391,
+                          0.0015913281822577119, 0.9999986290931702, 0.00043518951861187816,
+                          0.003108787816017866, -0.00044013507431373, 0.9999950528144836]
+    extrinsics_translation: [-9.677278285380453e-06, 1.0000000656873453e-05, 1.0000000656873453e-05]
+
+    min_confidence: 0.0
+    sync_slop: 0.10
+    sync_queue: 10
+    log_targets: true
+
+
+wrist_mask_to_pointcloud:
+  ros__parameters:
+    rgb_topic: "/camera_right/camera_right/color/image_rect_raw"
+    depth_topic: "/camera_right/camera_right/depth/image_rect_raw"
+    rgb_info_topic: "/camera_right/camera_right/color/camera_info"
+    depth_info_topic: "/camera_right/camera_right/depth/camera_info"
+    detections_topic: "/detections"
+
+    out_cloud_topic: "/perception/wrist/mask_cloud"
+
+    base_frame: "base_link"
+    rgb_frame: ""
+    depth_frame: ""
+    camera_name: "wrist_right"
+    transform_to_base: true
+    use_latest_tf_on_zero_stamp: true
+
+    depth_scale: 0.001
+    invalid_depth_values: [0, 65535]
+    min_depth_m: 0.1
+    max_depth_m: 3.0
+    pixel_step: 1
+
+    use_tf_for_extrinsics: true
+    extrinsics_rotation: [0.9999939203262329, -0.0015899674035608768, -0.003109483979642391,
+                          0.0015913281822577119, 0.9999986290931702, 0.00043518951861187816,
+                          0.003108787816017866, -0.00044013507431373, 0.9999950528144836]
+    extrinsics_translation: [-9.677278285380453e-06, 1.0000000656873453e-05, 1.0000000656873453e-05]
+
+    min_confidence: 0.0
+    sync_slop: 0.10
+    sync_queue: 10
+    log_clouds: true
+
+
+wrist_grasp_pcd_node:
+  ros__parameters:
+    rgb_topic: "/camera_right/camera_right/color/image_rect_raw"
+    depth_topic: "/camera_right/camera_right/depth/image_rect_raw"
+    rgb_info_topic: "/camera_right/camera_right/color/camera_info"
+    depth_info_topic: "/camera_right/camera_right/depth/camera_info"
+    detections_topic: "/detections"
+
+    # Per-class topics: <prefix>/<class_name>
+    pcd_topic_prefix: "/perception/wrist/target_pcd"
+
+    base_frame: "base_link"
+    rgb_frame: ""
+    depth_frame: ""
+    camera_name: "wrist_right"
+    transform_to_base: true
+    use_latest_tf_on_zero_stamp: true
+
+    depth_scale: 0.001
+    invalid_depth_values: [0, 65535]
+    min_depth_m: 0.1
+    max_depth_m: 3.0
+
+    # grasp-quality cleanup
+    mask_erosion_px: 2
+    sor_enable: true
+    sor_k_neighbors: 20
+    sor_std_ratio: 1.0
+    sor_min_points: 30
+    pixel_step: 1
+
+    use_tf_for_extrinsics: true
+    extrinsics_rotation: [0.9999939203262329, -0.0015899674035608768, -0.003109483979642391,
+                          0.0015913281822577119, 0.9999986290931702, 0.00043518951861187816,
+                          0.003108787816017866, -0.00044013507431373, 0.9999950528144836]
+    extrinsics_translation: [-9.677278285380453e-06, 1.0000000656873453e-05, 1.0000000656873453e-05]
+
+    min_confidence: 0.0
+    sync_slop: 0.10
+    sync_queue: 10
+    log_clouds: true

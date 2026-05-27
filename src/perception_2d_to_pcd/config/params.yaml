@@ -1,0 +1,123 @@
+projection_2d_to_pcd:
+  ros__parameters:
+    # ---- input topics (head ZED camera) ----
+    rgb_topic: "/zed/zed_node/rgb/image_rect_color"
+    depth_topic: "/zed/zed_node/depth/depth_registered"
+    camera_info_topic: "/zed/zed_node/rgb/camera_info"
+    detections_topic: "/detections"
+
+    # ---- output topics ----
+    out_rgb_topic: "/perception/head/rgb"
+    out_depth_topic: "/perception/head/depth"
+    out_camera_info_topic: "/perception/head/camera_info"
+    out_target_pose_topic: "/perception/head/target_pose"
+
+    # ---- frames ----
+    base_frame: "base_link"
+    # Leave empty to take the optical frame from CameraInfo/depth header.
+    # (Observed value: zed_left_camera_optical_frame)
+    camera_optical_frame: ""
+
+    # Only project detections whose source_camera matches this.
+    camera_name: "head"
+
+    # ---- depth handling ----
+    # Depth is fixed to 16-bit (mono16, depth_registered) in millimeters on
+    # this robot, so depth_scale = 0.001 converts to meters.
+    depth_scale: 0.001
+    invalid_depth_values: [0, 65535]
+    min_depth_m: 0.1
+    max_depth_m: 5.0
+    sample_window: 5
+
+    # ---- time sync ----
+    sync_slop: 0.05
+    sync_queue: 10
+
+    # ZED head image stamps were observed as 0; fall back to latest TF.
+    use_latest_tf_on_zero_stamp: true
+
+    log_targets: true
+
+
+mask_to_pointcloud:
+  ros__parameters:
+    # ---- input topics (head ZED camera) ----
+    rgb_topic: "/zed/zed_node/rgb/image_rect_color"
+    depth_topic: "/zed/zed_node/depth/depth_registered"
+    camera_info_topic: "/zed/zed_node/rgb/camera_info"
+    detections_topic: "/detections"
+
+    # ---- output topic ----
+    out_cloud_topic: "/perception/head/mask_cloud"
+
+    # ---- frames ----
+    base_frame: "base_link"
+    camera_optical_frame: ""
+    camera_name: "head"
+
+    # ---- depth handling (16-bit mono16, millimeters) ----
+    depth_scale: 0.001
+    invalid_depth_values: [0, 65535]
+    min_depth_m: 0.1
+    max_depth_m: 5.0
+
+    # Keep every Nth pixel inside the mask (1 = full density).
+    # Increase to lighten the cloud (e.g. 2 or 4) if it's too heavy.
+    pixel_step: 1
+
+    # ---- time sync ----
+    sync_slop: 0.05
+    sync_queue: 10
+
+    # Emit cloud in base_frame (true) or camera optical frame (false).
+    transform_to_base: true
+    use_latest_tf_on_zero_stamp: true
+
+    log_clouds: true
+
+
+grasp_pcd_node:
+  ros__parameters:
+    # ---- input topics (head ZED camera) ----
+    rgb_topic: "/zed/zed_node/rgb/image_rect_color"
+    depth_topic: "/zed/zed_node/depth/depth_registered"
+    camera_info_topic: "/zed/zed_node/rgb/camera_info"
+    detections_topic: "/detections"
+
+    # ---- output ----
+    # Per-class topics are created as <prefix>/<class_name>,
+    # e.g. /perception/head/target_pcd/hex_nut
+    pcd_topic_prefix: "/perception/head/target_pcd"
+
+    # ---- frames ----
+    base_frame: "base_link"
+    camera_optical_frame: ""
+    camera_name: "head"
+    transform_to_base: true
+    use_latest_tf_on_zero_stamp: true
+
+    # ---- depth handling (16-bit mono16, millimeters) ----
+    depth_scale: 0.001
+    invalid_depth_values: [0, 65535]
+    min_depth_m: 0.1
+    max_depth_m: 5.0
+
+    # ---- grasp-quality cleanup ----
+    # Stage 2.2: shrink the 2D mask by this many pixels to drop edge ghosting.
+    mask_erosion_px: 2
+    # Stage 2.3: statistical outlier removal.
+    sor_enable: true
+    sor_k_neighbors: 20
+    sor_std_ratio: 1.0
+    sor_min_points: 30
+    # Uniform downsample inside the mask (1 = full density).
+    pixel_step: 1
+
+    # ---- detection gating ----
+    min_confidence: 0.0
+
+    # ---- time sync ----
+    sync_slop: 0.05
+    sync_queue: 10
+    log_clouds: true

@@ -1,0 +1,16 @@
+part_detector:
+  ros__parameters:
+    # camera_name may be one of: head, wrist_left, wrist_right.
+    # If image_topic is empty, detector_node.py chooses the default topic for camera_name.
+    camera_name: head
+    image_topic: ""
+
+    detections_topic: /detections
+    debug_topic: /detector_debug_image
+    frame_id: ""
+
+    conf_threshold: 0.65
+    iou_threshold: 0.35
+    imgsz: 640
+    publish_debug_image: true
+    log_detections: true

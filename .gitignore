@@ -1,0 +1,58 @@
+# ROS 2 / colcon build artifacts
+build/
+install/
+log/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local virtual environments
+.venv/
+venv/
+ocr_venv/
+yolo_venv/
+
+# Local caches and generated files
+paddlex_cache/
+_incoming/
+.codex/
+.agents/
+.git-real/
+
+# Large generated/debug artifacts
+*.bag
+*.db3
+*.mcap
+*.pcd
+*.ply
+*.npy
+*.npz
+*.png
+*.jpg
+*.jpeg
+*.ppm
+frames_*.gv
+frames_*.pdf
+
+# Archives and offline dependency bundles
+*.zip
+*.tar
+*.tar.gz
+*.whl
+src/monitor_ocr/paddle_wheels/
+
+# ML model weights: keep these outside Git, or use Git LFS / release assets.
+*.pt
+*.onnx
+*.engine
+*.pdiparams
+*.pdmodel
+
+# Local secrets/config overrides
+.env
+*.local

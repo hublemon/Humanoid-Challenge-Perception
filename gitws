@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+WS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec git --git-dir="${WS_DIR}/.git-real" --work-tree="${WS_DIR}" "$@"
