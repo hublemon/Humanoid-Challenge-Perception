@@ -123,3 +123,85 @@ wrist_grasp_pcd_node:
     sync_slop: 0.10
     sync_queue: 10
     log_clouds: true
+
+
+
+wrist_task_grasp_planner_node:
+  ros__parameters:
+    rgb_topic: "/camera_right/camera_right/color/image_rect_raw"
+    depth_topic: "/camera_right/camera_right/depth/image_rect_raw"
+    rgb_info_topic: "/camera_right/camera_right/color/camera_info"
+    depth_info_topic: "/camera_right/camera_right/depth/camera_info"
+    detections_topic: "/detections"
+    task_topic: "/monitor_ocr/result"
+
+    out_pose_topic: "/perception/wrist/target_one_pose"
+
+    base_frame: "base_link"
+    rgb_frame: ""
+    depth_frame: ""
+    camera_name: "wrist_right"
+    head_camera_names: ["head"]
+    use_latest_tf_on_zero_stamp: true
+
+    depth_scale: 0.001
+    invalid_depth_values: [0, 65535]
+    min_depth_m: 0.1
+    max_depth_m: 3.0
+
+    use_tf_for_extrinsics: true
+    extrinsics_rotation: [0.9999939203262329, -0.0015899674035608768, -0.003109483979642391,
+                          0.0015913281822577119, 0.9999986290931702, 0.00043518951861187816,
+                          0.003108787816017866, -0.00044013507431373, 0.9999950528144836]
+    extrinsics_translation: [-9.677278285380453e-06, 1.0000000656873453e-05, 1.0000000656873453e-05]
+
+    allow_all_without_task: false
+    require_screen_detected: false
+    task_timeout_sec: 10.0
+
+    class_alias_json: '{"플랜지 너트":"flange_nut","플랜지너트":"flange_nut","기어 링":"gear_ring","기어링":"gear_ring","스페이서 링":"spacer_ring","스페이서링":"spacer_ring","육각 너트":"hex_nut","육각너트":"hex_nut","돔 너트":"dome_nut","돔너트":"dome_nut"}'
+
+    min_confidence: 0.0
+    min_candidate_points: 20
+    min_score_to_publish: 0.20
+    mask_erosion_px: 2
+    pixel_step: 1
+    robust_iqr_filter_enable: true
+    robust_iqr_multiplier: 2.5
+
+    ideal_bbox_area_frac: 0.04
+    bbox_area_log_sigma: 1.2
+    good_depth_density: 0.45
+    max_good_z_iqr_m: 0.06
+    bad_overlap_iou: 0.45
+    bbox_mask_quality_when_no_seg: 0.55
+
+    tray_roi: [0, 0, 0, 0]
+    require_inside_tray_roi: false
+    boundary_margin_px: 18.0
+
+    weight_confidence: 0.25
+    weight_mask_quality: 0.20
+    weight_occlusion: 0.15
+    weight_bbox_size: 0.10
+    weight_screen_center: 0.10
+    weight_overlap: 0.10
+    weight_boundary: 0.07
+    weight_cross_camera: 0.03
+
+    sync_slop: 0.10
+    sync_queue: 10
+    log_rankings: true
+    log_top_k: 5
+
+    # Stabilize flickering YOLO class/bbox output before publishing one target.
+    temporal_smoothing_enable: true
+    temporal_window_sec: 0.8
+    temporal_min_observations: 2
+    temporal_position_gate_m: 0.06
+    temporal_max_history: 50
+
+    # Republish the latest stable pose briefly so `ros2 topic echo --once`
+    # does not miss a one-shot detection callback.
+    republish_last_pose_hz: 2.0
+    hold_last_pose_sec: 2.0

@@ -49,4 +49,12 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[params],
     )
 
-    return LaunchDescription([params_file_arg, projection, pointcloud, grasp])
+    planner = Node(
+        package='perception_2d_to_pcd_wrist',
+        executable='wrist_task_grasp_planner_node',
+        name='wrist_task_grasp_planner_node',
+        output='screen',
+        parameters=[params],
+    )
+
+    return LaunchDescription([params_file_arg, projection, pointcloud, grasp, planner])
