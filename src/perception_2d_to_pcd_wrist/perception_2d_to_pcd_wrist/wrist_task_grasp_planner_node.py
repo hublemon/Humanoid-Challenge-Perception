@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Task-aware wrist grasp target planner.
 
-이 노드는 /monitor_ocr/result task list를 기준으로 현재 필요한 부품만 고르고,
+이 노드는 /perception/task_list task list를 기준으로 현재 필요한 부품만 고르고,
 wrist_right detection 후보들을 점수화한 뒤 가장 집기 쉬운 후보 1개의
 3D 중심 좌표를 base_link 기준 PoseStamped로 publish한다.
 
@@ -62,7 +62,7 @@ class WristTaskGraspPlannerNode(Node):
         self.declare_parameter('rgb_info_topic', '/camera_right/camera_right/color/camera_info')
         self.declare_parameter('depth_info_topic', '/camera_right/camera_right/depth/camera_info')
         self.declare_parameter('detections_topic', '/detections')
-        self.declare_parameter('task_topic', '/monitor_ocr/result')
+        self.declare_parameter('task_topic', '/perception/task_list')
         self.declare_parameter('out_pose_topic', '/perception/wrist/target_one_pose')
 
         self.declare_parameter('base_frame', 'base_link')
@@ -355,11 +355,6 @@ class WristTaskGraspPlannerNode(Node):
             self.last_pose = None
             self.last_pose_time = None
 
-        self.get_logger().info(
-            'Active task classes: '
-            + (', '.join(f'{k}:{v}' for k, v in sorted(tasks.items())) or '(none)')
-        )
-
     def _active_task_classes(self) -> Optional[set]:
         if self.allow_all_without_task and not self.current_tasks:
             return None
@@ -388,7 +383,7 @@ class WristTaskGraspPlannerNode(Node):
         active_classes = self._active_task_classes()
         if active_classes == set():
             self.get_logger().warn(
-                'No active task class from /monitor_ocr/result; not publishing target.',
+                f'No active task class from {self.task_topic}; not publishing target.',
                 throttle_duration_sec=5.0
             )
             return
@@ -425,6 +420,18 @@ class WristTaskGraspPlannerNode(Node):
         head_or_other_dets = [
             det for det in msg.detections if not self._is_wrist_detection(det)
         ]
+        debug_skips = {
+            'not_active': 0,
+            'low_conf': 0,
+            'bad_bbox': 0,
+            'outside_roi': 0,
+            'no_mask': 0,
+            'no_depth': 0,
+            'few_points': 0,
+        }
+        wrist_classes = sorted({
+            self._canonical_label(det.class_name) for det in wrist_dets
+        })
 
         candidates: List[Candidate] = []
 
@@ -432,20 +439,25 @@ class WristTaskGraspPlannerNode(Node):
             canonical = self._canonical_label(det.class_name)
 
             if active_classes is not None and canonical not in active_classes:
+                debug_skips['not_active'] += 1
                 continue
 
             if float(det.confidence) < self.min_confidence:
+                debug_skips['low_conf'] += 1
                 continue
 
             bbox = self._clipped_bbox(det, rgb_w, rgb_h)
             if bbox is None:
+                debug_skips['bad_bbox'] += 1
                 continue
 
             if self.require_inside_tray_roi and not self._bbox_inside_roi(bbox, tray_roi):
+                debug_skips['outside_roi'] += 1
                 continue
 
             raw_mask, has_seg = self._rasterize_mask(det, rgb_h, rgb_w)
             if raw_mask is None:
+                debug_skips['no_mask'] += 1
                 continue
 
             mask = raw_mask
@@ -458,6 +470,7 @@ class WristTaskGraspPlannerNode(Node):
 
             inside = wr.mask_membership(u_proj, v_proj, mask)
             if not np.any(inside):
+                debug_skips['no_depth'] += 1
                 continue
 
             sel = pts_color[inside]
@@ -466,6 +479,7 @@ class WristTaskGraspPlannerNode(Node):
                 sel = self._robust_iqr_filter(sel)
 
             if sel.shape[0] < self.min_candidate_points:
+                debug_skips['few_points'] += 1
                 continue
 
             center_color = np.median(sel, axis=0)
@@ -500,7 +514,9 @@ class WristTaskGraspPlannerNode(Node):
         if not candidates:
             self.get_logger().warn(
                 f'No valid wrist candidate matched task classes: '
-                f'{sorted(active_classes) if active_classes is not None else "ALL"}',
+                f'{sorted(active_classes) if active_classes is not None else "ALL"}; '
+                f'total_detections={len(msg.detections)}, wrist_detections={len(wrist_dets)}, '
+                f'wrist_classes={wrist_classes}, skips={debug_skips}',
                 throttle_duration_sec=5.0
             )
             return

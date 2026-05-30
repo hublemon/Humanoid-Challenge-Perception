@@ -133,7 +133,7 @@ wrist_task_grasp_planner_node:
     rgb_info_topic: "/camera_right/camera_right/color/camera_info"
     depth_info_topic: "/camera_right/camera_right/depth/camera_info"
     detections_topic: "/detections"
-    task_topic: "/monitor_ocr/result"
+    task_topic: "/perception/task_list"
 
     out_pose_topic: "/perception/wrist/target_one_pose"
 

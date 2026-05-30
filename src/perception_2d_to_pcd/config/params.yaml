@@ -121,3 +121,6 @@ grasp_pcd_node:
     sync_slop: 0.05
     sync_queue: 10
     log_clouds: true
+
+
+

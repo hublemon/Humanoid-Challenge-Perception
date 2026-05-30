@@ -7,11 +7,11 @@
 #    bash ~/ai_worker/monitor_ocr/run_ocr.sh docker   # docker 컨테이너 실행
 #
 #  옵션 (환경변수로 재정의 가능):
-#    IMAGE_TOPIC=/zed/zed_node/left/image_rect_color
+#    IMAGE_TOPIC=/zed/zed_node/rgb/image_rect_color
 #    INTERVAL=2.0    (OCR 처리 주기, 초)
 # ══════════════════════════════════════════════════════════════════════════════
 
-IMAGE_TOPIC="${IMAGE_TOPIC:-/zed/zed_node/left/image_rect_color}"
+IMAGE_TOPIC="${IMAGE_TOPIC:-/zed/zed_node/rgb/image_rect_color}"
 INTERVAL="${INTERVAL:-2.0}"
 MODE="${1:-local}"
 

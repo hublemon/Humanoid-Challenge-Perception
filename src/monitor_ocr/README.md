@@ -127,7 +127,7 @@ ros2 run monitor_ocr monitor_ocr_node --ros-args -p hq_mode:=true
 # 저화질 전처리 모드 (기본값, 기존 미션 형식)
 ros2 run monitor_ocr monitor_ocr_node --ros-args -p hq_mode:=false
 
-# 카메라 토픽 변경 (기본: /zed/zed_node/left/image_rect_color)
+# 카메라 토픽 변경 (기본: /zed/zed_node/rgb/image_rect_color)
 ros2 run monitor_ocr monitor_ocr_node --ros-args -p image_topic:=/your/topic
 
 # OCR 처리 주기 변경 (기본: 2.0초)

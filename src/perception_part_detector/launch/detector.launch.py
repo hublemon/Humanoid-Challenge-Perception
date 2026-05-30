@@ -8,6 +8,11 @@ import os
 
 
 def generate_launch_description():
+    default_model = os.path.join(
+        get_package_share_directory('perception_part_detector'),
+        'weights',
+        'best.pt',
+    )
     config = os.path.join(
         get_package_share_directory('perception_part_detector'),
         'config',
@@ -19,6 +24,7 @@ def generate_launch_description():
         DeclareLaunchArgument('image_topic', default_value=''),
         DeclareLaunchArgument('detections_topic', default_value='/detections'),
         DeclareLaunchArgument('debug_topic', default_value='/detector_debug_image'),
+        DeclareLaunchArgument('model_path', default_value=default_model),
         DeclareLaunchArgument('frame_id', default_value=''),
         DeclareLaunchArgument('conf_threshold', default_value='0.65'),
         DeclareLaunchArgument('iou_threshold', default_value='0.35'),
@@ -37,6 +43,7 @@ def generate_launch_description():
                     'image_topic': LaunchConfiguration('image_topic'),
                     'detections_topic': LaunchConfiguration('detections_topic'),
                     'debug_topic': LaunchConfiguration('debug_topic'),
+                    'model_path': LaunchConfiguration('model_path'),
                     'frame_id': LaunchConfiguration('frame_id'),
                     'conf_threshold': ParameterValue(
                         LaunchConfiguration('conf_threshold'),

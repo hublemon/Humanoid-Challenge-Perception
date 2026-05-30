@@ -163,6 +163,60 @@ Monitor OCR:
 ros2 run monitor_ocr monitor_ocr_node --ros-args -p parts_mode:=true
 ```
 
+Blue tray YOLO data collection:
+
+```bash
+python3 tools/collect_blue_tray_images.py
+```
+
+By default this saves 200 images from each topic below:
+
+```text
+/zed/zed_node/rgb/image_rect_color
+/camera_left/camera_left/color/image_rect_raw
+/camera_right/camera_right/color/image_rect_raw
+```
+
+The output directory is `/captures/blue_tray_yolo_<timestamp>/` with one
+subdirectory per camera and a `metadata.csv` file. To change the sample interval
+or output path:
+
+```bash
+python3 tools/collect_blue_tray_images.py --ros-args \
+  -p output_dir:=/captures/blue_tray_yolo_run01 \
+  -p target_per_topic:=200 \
+  -p save_every_n:=5 \
+  -p min_interval_sec:=0.2
+```
+
+Blue tray task management:
+
+```bash
+# 1) OCR target counts
+ros2 run monitor_ocr monitor_ocr_node --ros-args -p parts_mode:=true
+
+# 2) Part YOLO detections. This model only needs the five part classes.
+ros2 launch perception_part_detector detector.launch.py
+
+# 3) Tray-only YOLO + tray contents + remaining task list
+ros2 launch task_management task_management.launch.py
+```
+
+Topic flow:
+
+```text
+/monitor_ocr/result       std_msgs/String JSON
+/detections               perception_part_detector/msg/PartDetectionArray
+/perception/tray_contents std_msgs/String JSON
+/perception/task_list     std_msgs/String JSON
+```
+
+`tray_occupancy_node` runs the tray-only YOLO model at `/home/parkum/best.pt`,
+then counts a part only when its bbox bottom-center is inside the detected tray
+bbox or mask for the configured stable frame window.
+`management_node` always publishes `remaining = max(ocr_count - tray_count, 0)`,
+so a part visible for many frames is not subtracted repeatedly.
+
 ## Before Publishing To GitHub
 
 1. Check that `.gitignore` excludes generated and heavy files.

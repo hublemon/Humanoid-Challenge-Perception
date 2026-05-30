@@ -12,7 +12,7 @@ Publish:
   /monitor_ocr/title           (std_msgs/String)       제목 텍스트
 
 Parameters:
-  image_topic      (str,   default='/zed/zed_node/left/image_rect_color')
+  image_topic      (str,   default='/zed/zed_node/rgb/image_rect_color')
   process_interval (float, default=2.0)  OCR 최소 주기 (초)
 """
 import json
@@ -39,7 +39,7 @@ class MonitorOCRNode(Node):
         super().__init__('monitor_ocr_node')
 
         # 파라미터
-        self.declare_parameter('image_topic',      '/zed/zed_node/left/image_rect_color')
+        self.declare_parameter('image_topic',      '/zed/zed_node/rgb/image_rect_color')
         self.declare_parameter('process_interval', 2.0)
         self.declare_parameter('hq_mode',          False)
         self.declare_parameter('parts_mode',       False)
