@@ -19,13 +19,19 @@ def generate_launch_description() -> LaunchDescription:
         default_value=default_params,
         description='Path to the ROS 2 parameters YAML file.',
     )
+    python_arg = DeclareLaunchArgument(
+        'python_executable',
+        default_value='/ws/yolo_venv/bin/python3',
+        description='Python interpreter used to run the wrist pointcloud node.',
+    )
 
     node = Node(
         package='perception_2d_to_pcd_wrist',
         executable='wrist_pointcloud_node',
         name='wrist_mask_to_pointcloud',
+        prefix=LaunchConfiguration('python_executable'),
         output='screen',
         parameters=[LaunchConfiguration('params_file')],
     )
 
-    return LaunchDescription([params_file_arg, node])
+    return LaunchDescription([params_file_arg, python_arg, node])

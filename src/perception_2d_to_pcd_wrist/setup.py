@@ -32,6 +32,7 @@ setup(
             'wrist_pointcloud_node = perception_2d_to_pcd_wrist.wrist_pointcloud_node:main',
             'wrist_grasp_pcd_node = perception_2d_to_pcd_wrist.wrist_grasp_pcd_node:main',
             'wrist_task_grasp_planner_node = perception_2d_to_pcd_wrist.wrist_task_grasp_planner_node:main',
+            'wrist_grasp_dataset_recorder_node = perception_2d_to_pcd_wrist.wrist_grasp_dataset_recorder_node:main',
         ],
     },
 )
