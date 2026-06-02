@@ -215,6 +215,10 @@ class TrayOccupancyNode(Node):
             if now - float(item["wall_time"]) <= self.tray_max_age_sec
         ]
         hits = [item for item in recent if item["trays"]]
+
+        if not recent or not hits:
+            return [], self.latest_tray_frame_id, self.latest_tray_stamp
+
         min_hits = min(self.tray_min_hits, len(recent))
 
         if len(hits) < min_hits:
