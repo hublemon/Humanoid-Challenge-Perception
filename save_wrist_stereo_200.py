@@ -11,15 +11,15 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPo
 
 
 TOPICS = {
+    "zed_rgb": "/zed/zed_node/rgb/image_rect_color",
     "right": "/camera_right/camera_right/color/image_rect_raw",
-    "left": "/camera_left/camera_left/color/image_rect_raw",
 }
 
 TARGET_PER_TOPIC = int(os.environ.get("TARGET_PER_TOPIC", "200"))
 EVERY_N = int(os.environ.get("EVERY_N", "1"))
 
 STAMP = time.strftime("%Y%m%d_%H%M%S")
-OUT_ROOT = Path(os.environ.get("OUT_DIR", f"/captures/wrist_stereo_200_{STAMP}"))
+OUT_ROOT = Path(os.environ.get("OUT_DIR", f"captures/zed_rgb_right_200_{STAMP}"))
 
 
 def stamp_name(msg: Image, fallback_count: int) -> str:

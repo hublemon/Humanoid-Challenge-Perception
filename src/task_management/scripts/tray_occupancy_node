@@ -1,6 +1,0 @@
-#!/ws/yolo_venv/bin/python3
-from task_management.tray_occupancy_node import main
-
-
-if __name__ == "__main__":
-    main()

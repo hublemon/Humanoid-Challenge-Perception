@@ -1,0 +1,31 @@
+{
+  "index": 16,
+  "pcd_file": "sample_016.pcd",
+  "pose_file": "sample_016_pose.json",
+  "point_count": 32521,
+  "cloud": {
+    "frame_id": "base_link",
+    "stamp": {
+      "sec": 1780411508,
+      "nanosec": 843603275
+    }
+  },
+  "pose": {
+    "frame_id": "base_link",
+    "stamp": {
+      "sec": 1780411508,
+      "nanosec": 748435951
+    },
+    "position": {
+      "x": 0.5536621686227883,
+      "y": -0.08755293277010406,
+      "z": 0.8655910644377435
+    },
+    "orientation": {
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0,
+      "w": 1.0
+    }
+  }
+}

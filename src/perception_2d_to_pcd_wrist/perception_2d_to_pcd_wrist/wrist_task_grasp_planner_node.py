@@ -2,22 +2,19 @@
 """Task-aware wrist grasp target planner.
 
 이 노드는 /perception/task_list task list를 기준으로 현재 필요한 부품만 고르고,
-wrist_right detection 후보들을 점수화한 뒤 가장 집기 쉬운 후보 1개의
+wrist_right detection 후보 중 confidence가 높고 팔 기준점에 가까운 후보 1개의
 3D 중심 좌표를 base_link 기준 PoseStamped로 publish한다.
 
 Publish:
 - /perception/wrist/target_one_pose : geometry_msgs/msg/PoseStamped
+- /perception/wrist/target_one_detection : std_msgs/msg/String JSON
 
-주의:
-head detection은 wrist depth와 직접 대응되지 않으므로 3D 좌표 계산에는 사용하지 않는다.
-head detection은 같은 class가 보였는지에 대한 보조 bonus로만 사용한다.
 최종 3D target은 항상 wrist_right detection + wrist RGB-D에서 계산된다.
 """
 
 from __future__ import annotations
 
 import json
-import math
 from collections import deque
 from dataclasses import dataclass
 from typing import Deque, Dict, List, Optional, Sequence, Tuple
@@ -64,12 +61,15 @@ class WristTaskGraspPlannerNode(Node):
         self.declare_parameter('detections_topic', '/detections')
         self.declare_parameter('task_topic', '/perception/task_list')
         self.declare_parameter('out_pose_topic', '/perception/wrist/target_one_pose')
+        self.declare_parameter(
+            'out_target_detection_topic',
+            '/perception/wrist/target_one_detection',
+        )
 
         self.declare_parameter('base_frame', 'base_link')
         self.declare_parameter('rgb_frame', '')
         self.declare_parameter('depth_frame', '')
         self.declare_parameter('camera_name', 'wrist_right')
-        self.declare_parameter('head_camera_names', ['head'])
         self.declare_parameter('use_latest_tf_on_zero_stamp', True)
 
         self.declare_parameter('depth_scale', 0.001)
@@ -101,6 +101,10 @@ class WristTaskGraspPlannerNode(Node):
             '"스페이서링":"spacer_ring",'
             '"육각 너트":"hex_nut",'
             '"육각너트":"hex_nut",'
+            '"dom nut":"dome_nut",'
+            '"dom_nut":"dome_nut",'
+            '"dome nut":"dome_nut",'
+            '"dome_nut":"dome_nut",'
             '"돔 너트":"dome_nut",'
             '"돔너트":"dome_nut"'
             '}')
@@ -113,25 +117,14 @@ class WristTaskGraspPlannerNode(Node):
         self.declare_parameter('robust_iqr_filter_enable', True)
         self.declare_parameter('robust_iqr_multiplier', 2.5)
 
-        self.declare_parameter('ideal_bbox_area_frac', 0.04)
-        self.declare_parameter('bbox_area_log_sigma', 1.2)
-        self.declare_parameter('good_depth_density', 0.45)
-        self.declare_parameter('max_good_z_iqr_m', 0.06)
-        self.declare_parameter('bad_overlap_iou', 0.45)
-        self.declare_parameter('bbox_mask_quality_when_no_seg', 0.55)
-
         self.declare_parameter('tray_roi', [0, 0, 0, 0])
         self.declare_parameter('require_inside_tray_roi', False)
-        self.declare_parameter('boundary_margin_px', 18.0)
 
-        self.declare_parameter('weight_confidence', 0.25)
-        self.declare_parameter('weight_mask_quality', 0.20)
-        self.declare_parameter('weight_occlusion', 0.15)
-        self.declare_parameter('weight_bbox_size', 0.10)
-        self.declare_parameter('weight_screen_center', 0.10)
-        self.declare_parameter('weight_overlap', 0.10)
-        self.declare_parameter('weight_boundary', 0.07)
-        self.declare_parameter('weight_cross_camera', 0.03)
+        self.declare_parameter('arm_reference_frame', '')
+        self.declare_parameter('arm_reference_xyz', [0.0, 0.0, 0.0])
+        self.declare_parameter('max_arm_distance_m', 0.60)
+        self.declare_parameter('weight_confidence', 0.45)
+        self.declare_parameter('weight_arm_proximity', 0.55)
 
         self.declare_parameter('sync_slop', 0.10)
         self.declare_parameter('sync_queue', 10)
@@ -154,12 +147,12 @@ class WristTaskGraspPlannerNode(Node):
         self.detections_topic = gp('detections_topic').value
         self.task_topic = gp('task_topic').value
         self.out_pose_topic = gp('out_pose_topic').value
+        self.out_target_detection_topic = gp('out_target_detection_topic').value
 
         self.base_frame = gp('base_frame').value
         self.rgb_frame_override = gp('rgb_frame').value
         self.depth_frame_override = gp('depth_frame').value
         self.camera_name = gp('camera_name').value
-        self.head_camera_names = [str(x) for x in gp('head_camera_names').value]
         self.use_latest_tf_on_zero_stamp = bool(gp('use_latest_tf_on_zero_stamp').value)
 
         self.depth_scale = float(gp('depth_scale').value)
@@ -186,25 +179,20 @@ class WristTaskGraspPlannerNode(Node):
         self.robust_iqr_filter_enable = bool(gp('robust_iqr_filter_enable').value)
         self.robust_iqr_multiplier = float(gp('robust_iqr_multiplier').value)
 
-        self.ideal_bbox_area_frac = float(gp('ideal_bbox_area_frac').value)
-        self.bbox_area_log_sigma = float(gp('bbox_area_log_sigma').value)
-        self.good_depth_density = float(gp('good_depth_density').value)
-        self.max_good_z_iqr_m = float(gp('max_good_z_iqr_m').value)
-        self.bad_overlap_iou = float(gp('bad_overlap_iou').value)
-        self.bbox_mask_quality_when_no_seg = float(gp('bbox_mask_quality_when_no_seg').value)
         self.tray_roi_param = [int(v) for v in gp('tray_roi').value]
         self.require_inside_tray_roi = bool(gp('require_inside_tray_roi').value)
-        self.boundary_margin_px = float(gp('boundary_margin_px').value)
+        self.arm_reference_frame = str(gp('arm_reference_frame').value).strip()
+        self.arm_reference_xyz = np.asarray(
+            [float(v) for v in gp('arm_reference_xyz').value],
+            dtype=np.float64,
+        )
+        if self.arm_reference_xyz.shape[0] != 3:
+            self.arm_reference_xyz = np.zeros(3, dtype=np.float64)
+        self.max_arm_distance_m = float(gp('max_arm_distance_m').value)
 
         self.weights = {
             'confidence': float(gp('weight_confidence').value),
-            'mask_quality': float(gp('weight_mask_quality').value),
-            'occlusion': float(gp('weight_occlusion').value),
-            'bbox_size': float(gp('weight_bbox_size').value),
-            'screen_center': float(gp('weight_screen_center').value),
-            'overlap': float(gp('weight_overlap').value),
-            'boundary': float(gp('weight_boundary').value),
-            'cross_camera': float(gp('weight_cross_camera').value),
+            'arm_proximity': float(gp('weight_arm_proximity').value),
         }
 
         self.sync_slop = float(gp('sync_slop').value)
@@ -235,12 +223,18 @@ class WristTaskGraspPlannerNode(Node):
         self.candidate_history: Deque[Tuple[float, Candidate]] = deque(
             maxlen=self.temporal_max_history)
         self.last_pose: Optional[PoseStamped] = None
+        self.last_target_detection: Optional[String] = None
         self.last_pose_time = None
 
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         self.pub_pose = self.create_publisher(PoseStamped, self.out_pose_topic, 10)
+        self.pub_target_detection = self.create_publisher(
+            String,
+            self.out_target_detection_topic,
+            10,
+        )
         self.republish_timer = None
         if self.republish_last_pose_hz > 0.0:
             self.republish_timer = self.create_timer(
@@ -275,7 +269,8 @@ class WristTaskGraspPlannerNode(Node):
             f'  detections={self.detections_topic} camera_name={self.camera_name}\n'
             f'  rgb={self.rgb_topic}\n'
             f'  depth={self.depth_topic}\n'
-            f'  out={self.out_pose_topic} frame={self.base_frame}\n'
+            f'  out_pose={self.out_pose_topic} frame={self.base_frame}\n'
+            f'  out_target_detection={self.out_target_detection_topic}\n'
             f'  allow_all_without_task={self.allow_all_without_task}, '
             f'min_score={self.min_score_to_publish}\n'
             f'  temporal_smoothing={self.temporal_smoothing_enable} '
@@ -313,11 +308,14 @@ class WristTaskGraspPlannerNode(Node):
                 f'Failed to parse task JSON from {self.task_topic}: {exc}')
             return
 
-        self.latest_screen_detected = bool(data.get('latest_screen_detected', True))
+        self.latest_screen_detected = bool(
+            data.get('ocr_latest_screen_detected', data.get('latest_screen_detected', True))
+        )
         if self.require_screen_detected and not self.latest_screen_detected:
             self.current_tasks = {}
             self.candidate_history.clear()
             self.last_pose = None
+            self.last_target_detection = None
             self.last_pose_time = None
             self.task_last_update = self.get_clock().now()
             self.get_logger().warn('Task screen is not detected; cleared active task list.')
@@ -353,6 +351,7 @@ class WristTaskGraspPlannerNode(Node):
         if tasks != previous_tasks:
             self.candidate_history.clear()
             self.last_pose = None
+            self.last_target_detection = None
             self.last_pose_time = None
 
     def _active_task_classes(self) -> Optional[set]:
@@ -391,7 +390,6 @@ class WristTaskGraspPlannerNode(Node):
         R, t = self._get_extrinsics()
 
         rgb_h, rgb_w = self.latest_rgb.shape[:2]
-        image_area = float(max(1, rgb_w * rgb_h))
         tray_roi = self._resolve_tray_roi(rgb_w, rgb_h)
 
         pts_depth, _, _ = wr.backproject_depth_image(
@@ -417,9 +415,6 @@ class WristTaskGraspPlannerNode(Node):
         u_proj, v_proj = wr.project_to_image(pts_color, self.K_rgb)
 
         wrist_dets = [det for det in msg.detections if self._is_wrist_detection(det)]
-        head_or_other_dets = [
-            det for det in msg.detections if not self._is_wrist_detection(det)
-        ]
         debug_skips = {
             'not_active': 0,
             'low_conf': 0,
@@ -428,6 +423,7 @@ class WristTaskGraspPlannerNode(Node):
             'no_mask': 0,
             'no_depth': 0,
             'few_points': 0,
+            'tf_failed': 0,
         }
         wrist_classes = sorted({
             self._canonical_label(det.class_name) for det in wrist_dets
@@ -455,7 +451,7 @@ class WristTaskGraspPlannerNode(Node):
                 debug_skips['outside_roi'] += 1
                 continue
 
-            raw_mask, has_seg = self._rasterize_mask(det, rgb_h, rgb_w)
+            raw_mask, _ = self._rasterize_mask(det, rgb_h, rgb_w)
             if raw_mask is None:
                 debug_skips['no_mask'] += 1
                 continue
@@ -486,18 +482,11 @@ class WristTaskGraspPlannerNode(Node):
 
             metrics = self._compute_metrics(
                 det=det,
-                canonical_class=canonical,
-                bbox=bbox,
-                mask=mask,
-                has_seg=has_seg,
-                selected_points=sel,
-                all_wrist_dets=wrist_dets,
-                cross_camera_dets=head_or_other_dets,
-                image_w=rgb_w,
-                image_h=rgb_h,
-                image_area=image_area,
-                tray_roi=tray_roi,
+                center_color=center_color,
             )
+            if metrics is None:
+                debug_skips['tf_failed'] += 1
+                continue
 
             score = self._weighted_score(metrics)
 
@@ -550,8 +539,11 @@ class WristTaskGraspPlannerNode(Node):
         if pose is None:
             return
 
+        target_detection = self._target_detection_msg(best, pose, msg)
         self.pub_pose.publish(pose)
+        self.pub_target_detection.publish(target_detection)
         self.last_pose = pose
+        self.last_target_detection = target_detection
         self.last_pose_time = self.get_clock().now()
 
         p = pose.pose.position
@@ -661,88 +653,87 @@ class WristTaskGraspPlannerNode(Node):
 
         self.last_pose.header.stamp = self.get_clock().now().to_msg()
         self.pub_pose.publish(self.last_pose)
+        if self.last_target_detection is not None:
+            self.pub_target_detection.publish(self.last_target_detection)
+
+    def _target_detection_msg(
+        self,
+        candidate: Candidate,
+        pose: PoseStamped,
+        detections_msg: PartDetectionArray,
+    ) -> String:
+        x1, y1, x2, y2 = candidate.bbox
+        det = candidate.det
+        p = pose.pose.position
+
+        payload = {
+            'rank': 1,
+            'class_id': int(getattr(det, 'class_id', -1)),
+            'class_name': str(getattr(det, 'class_name', '')),
+            'canonical_class': candidate.canonical_class,
+            'confidence': float(getattr(det, 'confidence', 0.0)),
+            'bbox': {
+                'x1': int(x1),
+                'y1': int(y1),
+                'x2': int(x2),
+                'y2': int(y2),
+                'width': int(x2 - x1),
+                'height': int(y2 - y1),
+            },
+            'bbox_xyxy': [int(x1), int(y1), int(x2), int(y2)],
+            'source_camera': str(getattr(det, 'source_camera', '')),
+            'score': float(candidate.score),
+            'point_count': int(candidate.point_count),
+            'metrics': {
+                key: float(value)
+                for key, value in candidate.metrics.items()
+            },
+            'detection_header': {
+                'frame_id': str(detections_msg.header.frame_id),
+                'stamp': {
+                    'sec': int(detections_msg.header.stamp.sec),
+                    'nanosec': int(detections_msg.header.stamp.nanosec),
+                },
+            },
+            'target_pose': {
+                'topic': self.out_pose_topic,
+                'frame_id': pose.header.frame_id,
+                'stamp': {
+                    'sec': int(pose.header.stamp.sec),
+                    'nanosec': int(pose.header.stamp.nanosec),
+                },
+                'position': {
+                    'x': float(p.x),
+                    'y': float(p.y),
+                    'z': float(p.z),
+                },
+            },
+        }
+
+        out = String()
+        out.data = json.dumps(payload, ensure_ascii=False)
+        return out
 
     def _compute_metrics(
         self,
         det,
-        canonical_class: str,
-        bbox: Tuple[int, int, int, int],
-        mask: np.ndarray,
-        has_seg: bool,
-        selected_points: np.ndarray,
-        all_wrist_dets: Sequence[object],
-        cross_camera_dets: Sequence[object],
-        image_w: int,
-        image_h: int,
-        image_area: float,
-        tray_roi: Tuple[int, int, int, int],
-    ) -> Dict[str, float]:
-        x1, y1, x2, y2 = bbox
-
-        bbox_area = float(max(1, (x2 - x1) * (y2 - y1)))
-        mask_area = float(max(1, np.count_nonzero(mask)))
-
+        center_color: np.ndarray,
+    ) -> Optional[Dict[str, float]]:
         confidence = self._clip01(float(det.confidence))
+        point_base = self._point_color_to_base(center_color, timeout_sec=0.2, warn=False)
+        if point_base is None:
+            return None
 
-        if has_seg:
-            mask_shape = self._clip01(mask_area / bbox_area)
-        else:
-            mask_shape = self._clip01(self.bbox_mask_quality_when_no_seg)
-
-        depth_density = float(selected_points.shape[0]) / mask_area
-        valid_depth = self._clip01(depth_density / max(1e-6, self.good_depth_density))
-
-        q25, q75 = np.percentile(selected_points[:, 2], [25, 75])
-        z_iqr = float(max(0.0, q75 - q25))
-
-        compactness = 1.0 - self._clip01(z_iqr / max(1e-6, self.max_good_z_iqr_m))
-        occlusion = self._clip01(0.55 * valid_depth + 0.45 * compactness)
-
-        mask_quality = self._clip01(0.45 * mask_shape + 0.55 * valid_depth)
-
-        area_frac = bbox_area / image_area
-        bbox_size = self._bbox_size_score(area_frac)
-
-        cx, cy = self._det_center(det, bbox)
-        dx = (cx - image_w * 0.5) / max(1.0, image_w * 0.5)
-        dy = (cy - image_h * 0.5) / max(1.0, image_h * 0.5)
-        screen_center = 1.0 - self._clip01(
-            math.sqrt(dx * dx + dy * dy) / math.sqrt(2.0)
+        arm_reference = self._arm_reference_in_base()
+        arm_distance = float(np.linalg.norm(point_base - arm_reference))
+        arm_proximity = 1.0 - self._clip01(
+            arm_distance / max(1e-6, self.max_arm_distance_m)
         )
-
-        max_iou = 0.0
-        for other in all_wrist_dets:
-            if other is det:
-                continue
-            obox = self._clipped_bbox(other, image_w, image_h)
-            if obox is None:
-                continue
-            max_iou = max(max_iou, self._iou(bbox, obox))
-
-        overlap = 1.0 - self._clip01(max_iou / max(1e-6, self.bad_overlap_iou))
-        boundary = self._boundary_score(bbox, tray_roi)
-
-        cross_camera = 0.0
-        for other in cross_camera_dets:
-            if self._canonical_label(getattr(other, 'class_name', '')) == canonical_class:
-                cross_camera = max(
-                    cross_camera,
-                    self._clip01(float(getattr(other, 'confidence', 0.0)))
-                )
 
         return {
             'confidence': confidence,
-            'mask_quality': mask_quality,
-            'occlusion': occlusion,
-            'bbox_size': bbox_size,
-            'screen_center': screen_center,
-            'overlap': overlap,
-            'boundary': boundary,
-            'cross_camera': cross_camera,
-            'depth_density': depth_density,
-            'z_iqr_m': z_iqr,
-            'max_iou': max_iou,
-            'area_frac': area_frac,
+            'arm_proximity': arm_proximity,
+            'arm_distance_m': arm_distance,
         }
 
     def _weighted_score(self, metrics: Dict[str, float]) -> float:
@@ -759,26 +750,6 @@ class WristTaskGraspPlannerNode(Node):
             return 0.0
 
         return self._clip01(acc / total_w)
-
-    def _bbox_size_score(self, area_frac: float) -> float:
-        ideal = max(1e-6, self.ideal_bbox_area_frac)
-        sigma = max(1e-6, self.bbox_area_log_sigma)
-
-        score = math.exp(
-            -0.5 * (math.log(max(area_frac, 1e-8) / ideal) / sigma) ** 2
-        )
-        return self._clip01(score)
-
-    def _boundary_score(
-        self,
-        bbox: Tuple[int, int, int, int],
-        roi: Tuple[int, int, int, int],
-    ) -> float:
-        x1, y1, x2, y2 = bbox
-        rx1, ry1, rx2, ry2 = roi
-
-        margin = min(x1 - rx1, y1 - ry1, rx2 - x2, ry2 - y2)
-        return self._clip01(float(margin) / max(1e-6, self.boundary_margin_px))
 
     def _rasterize_mask(
         self,
@@ -827,17 +798,6 @@ class WristTaskGraspPlannerNode(Node):
 
         return x1, y1, x2, y2
 
-    @staticmethod
-    def _det_center(det, bbox: Tuple[int, int, int, int]) -> Tuple[float, float]:
-        cx = float(getattr(det, 'center_x', 0.0))
-        cy = float(getattr(det, 'center_y', 0.0))
-
-        if cx > 0.0 or cy > 0.0:
-            return cx, cy
-
-        x1, y1, x2, y2 = bbox
-        return 0.5 * (x1 + x2), 0.5 * (y1 + y2)
-
     def _resolve_tray_roi(self, w: int, h: int) -> Tuple[int, int, int, int]:
         vals = self.tray_roi_param
 
@@ -861,25 +821,6 @@ class WristTaskGraspPlannerNode(Node):
         rx1, ry1, rx2, ry2 = roi
 
         return x1 >= rx1 and y1 >= ry1 and x2 <= rx2 and y2 <= ry2
-
-    @staticmethod
-    def _iou(a: Tuple[int, int, int, int], b: Tuple[int, int, int, int]) -> float:
-        ax1, ay1, ax2, ay2 = a
-        bx1, by1, bx2, by2 = b
-
-        ix1, iy1 = max(ax1, bx1), max(ay1, by1)
-        ix2, iy2 = min(ax2, bx2), min(ay2, by2)
-
-        iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
-        inter = float(iw * ih)
-
-        if inter <= 0.0:
-            return 0.0
-
-        area_a = float(max(1, (ax2 - ax1) * (ay2 - ay1)))
-        area_b = float(max(1, (bx2 - bx1) * (by2 - by1)))
-
-        return inter / max(1.0, area_a + area_b - inter)
 
     def _robust_iqr_filter(self, pts: np.ndarray) -> np.ndarray:
         if pts.shape[0] < max(10, self.min_candidate_points):
@@ -927,7 +868,12 @@ class WristTaskGraspPlannerNode(Node):
         ):
             return self._R_fallback, self._t_fallback
 
-    def _to_base_frame(self, point_color: np.ndarray) -> Optional[PoseStamped]:
+    def _point_color_to_base(
+        self,
+        point_color: np.ndarray,
+        timeout_sec: float,
+        warn: bool,
+    ) -> Optional[np.ndarray]:
         stamp = self.latest_depth_stamp
 
         is_zero = (stamp.sec == 0 and stamp.nanosec == 0)
@@ -948,7 +894,7 @@ class WristTaskGraspPlannerNode(Node):
                 self.base_frame,
                 self.rgb_frame,
                 lookup_time,
-                timeout=rclpy.duration.Duration(seconds=5.0)
+                timeout=rclpy.duration.Duration(seconds=timeout_sec)
             )
 
         except (
@@ -956,20 +902,60 @@ class WristTaskGraspPlannerNode(Node):
             tf2_ros.ConnectivityException,
             tf2_ros.ExtrapolationException,
         ) as exc:
-            self.get_logger().warn(
-                f'TF {self.rgb_frame} -> {self.base_frame} failed: {exc}',
-                throttle_duration_sec=5.0
-            )
+            if warn:
+                self.get_logger().warn(
+                    f'TF {self.rgb_frame} -> {self.base_frame} failed: {exc}',
+                    throttle_duration_sec=5.0
+                )
             return None
 
         pb = do_transform_point(pt, tf)
+        return np.asarray([pb.point.x, pb.point.y, pb.point.z], dtype=np.float64)
+
+    def _arm_reference_in_base(self) -> np.ndarray:
+        if not self.arm_reference_frame or self.arm_reference_frame == self.base_frame:
+            return self.arm_reference_xyz
+
+        pt = PointStamped()
+        pt.header.frame_id = self.arm_reference_frame
+        pt.header.stamp = self.get_clock().now().to_msg()
+        pt.point.x = float(self.arm_reference_xyz[0])
+        pt.point.y = float(self.arm_reference_xyz[1])
+        pt.point.z = float(self.arm_reference_xyz[2])
+
+        try:
+            tf = self.tf_buffer.lookup_transform(
+                self.base_frame,
+                self.arm_reference_frame,
+                rclpy.time.Time(),
+                timeout=rclpy.duration.Duration(seconds=0.05)
+            )
+        except (
+            tf2_ros.LookupException,
+            tf2_ros.ConnectivityException,
+            tf2_ros.ExtrapolationException,
+        ) as exc:
+            self.get_logger().warn(
+                f'TF {self.arm_reference_frame} -> {self.base_frame} failed; '
+                f'using arm_reference_xyz in {self.base_frame}: {exc}',
+                throttle_duration_sec=5.0
+            )
+            return self.arm_reference_xyz
+
+        pb = do_transform_point(pt, tf)
+        return np.asarray([pb.point.x, pb.point.y, pb.point.z], dtype=np.float64)
+
+    def _to_base_frame(self, point_color: np.ndarray) -> Optional[PoseStamped]:
+        point_base = self._point_color_to_base(point_color, timeout_sec=5.0, warn=True)
+        if point_base is None:
+            return None
 
         pose = PoseStamped()
         pose.header.frame_id = self.base_frame
         pose.header.stamp = self.get_clock().now().to_msg()
-        pose.pose.position.x = pb.point.x
-        pose.pose.position.y = pb.point.y
-        pose.pose.position.z = pb.point.z
+        pose.pose.position.x = float(point_base[0])
+        pose.pose.position.y = float(point_base[1])
+        pose.pose.position.z = float(point_base[2])
         pose.pose.orientation.x = 0.0
         pose.pose.orientation.y = 0.0
         pose.pose.orientation.z = 0.0
@@ -1050,10 +1036,8 @@ class WristTaskGraspPlannerNode(Node):
             m = c.metrics
             rows.append(
                 f'#{rank} {c.canonical_class} score={c.score:.3f} '
-                f'conf={m["confidence"]:.2f} mask={m["mask_quality"]:.2f} '
-                f'occ={m["occlusion"]:.2f} size={m["bbox_size"]:.2f} '
-                f'center={m["screen_center"]:.2f} overlap={m["overlap"]:.2f} '
-                f'boundary={m["boundary"]:.2f} cross={m["cross_camera"]:.2f} '
+                f'conf={m["confidence"]:.2f} arm={m["arm_proximity"]:.2f} '
+                f'dist={m["arm_distance_m"]:.3f}m '
                 f'pts={c.point_count}'
             )
 

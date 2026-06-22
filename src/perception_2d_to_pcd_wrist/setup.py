@@ -22,17 +22,12 @@ setup(
     zip_safe=True,
     maintainer='perception',
     maintainer_email='dev@example.com',
-    description='Wrist (RealSense) 2D detections -> 3D pose / PointCloud in base_link, '
-                'with depth->color re-projection for unaligned RGB-D.',
+    description='Task-aware wrist RGB-D grasp target planner with depth->color re-projection.',
     license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'wrist_projection_node = perception_2d_to_pcd_wrist.wrist_projection_node:main',
-            'wrist_pointcloud_node = perception_2d_to_pcd_wrist.wrist_pointcloud_node:main',
-            'wrist_grasp_pcd_node = perception_2d_to_pcd_wrist.wrist_grasp_pcd_node:main',
             'wrist_task_grasp_planner_node = perception_2d_to_pcd_wrist.wrist_task_grasp_planner_node:main',
-            'wrist_grasp_dataset_recorder_node = perception_2d_to_pcd_wrist.wrist_grasp_dataset_recorder_node:main',
         ],
     },
 )

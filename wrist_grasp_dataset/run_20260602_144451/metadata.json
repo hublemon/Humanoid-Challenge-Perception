@@ -1,0 +1,10 @@
+{
+  "pose_topic": "/perception/wrist/target_one_pose",
+  "cloud_topic": "/perception/wrist/mask_cloud",
+  "sample_count": 30,
+  "min_interval_sec": 0.2,
+  "require_pose": true,
+  "skip_empty_cloud": true,
+  "output_dir": "/ws/wrist_grasp_dataset/run_20260602_144451",
+  "created_at": "2026-06-02T14:44:51"
+}

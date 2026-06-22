@@ -4,12 +4,8 @@
   <name>perception_2d_to_pcd_wrist</name>
   <version>0.1.0</version>
   <description>
-    Wrist (RealSense right camera) variant of perception_2d_to_pcd. Converts 2D
-    YOLO detections into 3D poses / point clouds in base_link. Because the wrist
-    RGB and depth streams are unaligned and on different optical frames, depth is
-    re-projected into the RGB image plane (depth->color extrinsics) before mask
-    filtering. Provides three nodes: single-center pose, full-scene cloud, and
-    per-object cleaned grasp cloud.
+    Wrist task grasp planner. Converts task-filtered 2D YOLO detections into one
+    3D grasp target in base_link using wrist RGB-D reprojection.
   </description>
   <maintainer email="dev@example.com">perception</maintainer>
   <license>Apache-2.0</license>
@@ -22,12 +18,10 @@
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>tf2_geometry_msgs</exec_depend>
-  <exec_depend>tf2_sensor_msgs</exec_depend>
   <exec_depend>message_filters</exec_depend>
   <exec_depend>cv_bridge</exec_depend>
   <exec_depend>python3-opencv</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
-  <exec_depend>python3-scipy</exec_depend>
   <exec_depend>perception_part_detector</exec_depend>
 
   <test_depend>ament_copyright</test_depend>

@@ -3,7 +3,7 @@
 <package format="3">
   <name>task_management</name>
   <version>0.0.1</version>
-  <description>Task list management from monitor OCR results and blue tray occupancy.</description>
+  <description>OCR task list and blue tray ROI management.</description>
   <maintainer email="base@todo.todo">base</maintainer>
   <license>MIT</license>
 
@@ -13,7 +13,7 @@
   <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>cv_bridge</depend>
-  <depend>perception_part_detector</depend>
+  <exec_depend>ament_index_python</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

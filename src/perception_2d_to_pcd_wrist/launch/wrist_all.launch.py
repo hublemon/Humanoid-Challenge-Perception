@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""Launch ALL wrist nodes together:
-  - wrist_projection_node    : detection center -> PoseStamped (target_pose)
-  - wrist_pointcloud_node    : all masks merged -> one PointCloud2 (mask_cloud)
-  - wrist_grasp_pcd_node     : per-object cleaned PointCloud2 (target_pcd/<class>)
-
-All read the same config/params.yaml.
-"""
+"""Launch the wrist task grasp planner."""
 
 import os
 
@@ -25,36 +19,19 @@ def generate_launch_description() -> LaunchDescription:
         default_value=default_params,
         description='Path to the ROS 2 parameters YAML file.',
     )
-    params = LaunchConfiguration('params_file')
-
-    projection = Node(
-        package='perception_2d_to_pcd_wrist',
-        executable='wrist_projection_node',
-        name='wrist_projection_node',
-        output='screen',
-        parameters=[params],
-    )
-    pointcloud = Node(
-        package='perception_2d_to_pcd_wrist',
-        executable='wrist_pointcloud_node',
-        name='wrist_mask_to_pointcloud',
-        output='screen',
-        parameters=[params],
-    )
-    grasp = Node(
-        package='perception_2d_to_pcd_wrist',
-        executable='wrist_grasp_pcd_node',
-        name='wrist_grasp_pcd_node',
-        output='screen',
-        parameters=[params],
+    python_arg = DeclareLaunchArgument(
+        'python_executable',
+        default_value='/ws/yolo_venv/bin/python3',
+        description='Python interpreter used to run the wrist task grasp planner node.',
     )
 
     planner = Node(
         package='perception_2d_to_pcd_wrist',
         executable='wrist_task_grasp_planner_node',
         name='wrist_task_grasp_planner_node',
+        prefix=LaunchConfiguration('python_executable'),
         output='screen',
-        parameters=[params],
+        parameters=[LaunchConfiguration('params_file')],
     )
 
-    return LaunchDescription([params_file_arg, projection, pointcloud, grasp, planner])
+    return LaunchDescription([params_file_arg, python_arg, planner])
