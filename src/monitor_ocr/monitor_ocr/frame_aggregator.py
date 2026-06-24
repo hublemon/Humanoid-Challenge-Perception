@@ -210,3 +210,57 @@ class FrameAggregatorParts:
 
     def reset(self):
         self._history.clear()
+
+
+class FrameAggregatorSequence:
+    """
+    부품 순차 조립 지령(Peg1~N) OCR 결과 집계 (슬라이딩 윈도우 다수결).
+
+    Peg별 부품명은 라운드 중 바뀌지 않으므로, 한 번 다수결로 확정되면 lock.
+    """
+
+    def __init__(self, window: int = 10, peg_count: int = 4):
+        self.window    = window
+        self.peg_count = peg_count
+        self._history  = []
+        self._locked   = [None] * peg_count
+
+    def update(self, result: dict) -> dict:
+        self._history.append(result)
+        if len(self._history) > self.window:
+            self._history.pop(0)
+        return self._aggregate()
+
+    def _aggregate(self) -> dict:
+        hist   = self._history
+        latest = hist[-1]
+
+        sequence = []
+        for i in range(self.peg_count):
+            if self._locked[i] is not None:
+                sequence.append(self._locked[i])
+                continue
+            vals = [
+                h["sequence"][i] for h in hist
+                if h.get("screen_detected") and h.get("sequence")
+                and len(h["sequence"]) > i and h["sequence"][i]
+            ]
+            if vals:
+                winner, cnt = Counter(vals).most_common(1)[0]
+                # 윈도우의 60% 이상이 같은 값이면 확정.
+                if cnt >= max(2, len(hist) * 0.6):
+                    self._locked[i] = winner
+                sequence.append(winner)
+            else:
+                sequence.append("")
+
+        return {
+            "frames_used":            len(hist),
+            "sequence":               sequence,
+            "latest_elapsed_ms":      latest.get("elapsed_ms"),
+            "latest_screen_detected": latest.get("screen_detected", False),
+        }
+
+    def reset(self):
+        self._history.clear()
+        self._locked = [None] * self.peg_count

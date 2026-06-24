@@ -1,12 +1,8 @@
 #!/ws/yolo_venv/bin/python3
-"""ROS 2 part detector node.
+"""Nut detector node.
 
-This node subscribes to exactly one image topic selected by parameters and publishes:
-  - /detections: perception_part_detector/msg/PartDetectionArray
-  - /detector_debug_image or a user-selected debug image topic
-
-The root-level file is intentionally installed as the ROS 2 executable so that
-/ws/src/perception_part_detector/detector_node.py is the implementation that runs.
+Runs the nut YOLO model against one configured image topic and publishes
+PartDetectionArray messages compatible with the existing workspace.
 """
 
 import os
@@ -31,52 +27,53 @@ DEFAULT_IMAGE_TOPICS: Dict[str, str] = {
     'wrist_right': '/camera_right/camera_right/color/image_rect_raw',
 }
 
-DEFAULT_COLORS: List[Tuple[int, int, int]] = [
+CLASS_NAMES: List[str] = [
+    'flange_nut',
+    'gear_ring',
+    'spacer_ring',
+    'hex_nut',
+    'dome_nut',
+]
+
+COLORS: List[Tuple[int, int, int]] = [
     (255, 100, 100),
     (100, 255, 100),
     (100, 100, 255),
     (255, 255, 100),
     (255, 100, 255),
-    (100, 255, 255),
-    (255, 150, 50),
-    (180, 120, 255),
 ]
 
 
-class PartDetectorNode(Node):
+class NutDetectorNode(Node):
     def __init__(self) -> None:
-        super().__init__('part_detector')
+        super().__init__('nut_detector')
 
-        pkg_share = get_package_share_directory('perception_part_detector')
-        default_model = os.path.join(pkg_share, 'weights', 'best.pt')
+        pkg_dir = get_package_share_directory('perception_part_detector')
+        default_model = os.path.join(pkg_dir, 'weights', 'nut_best.pt')
 
         self.declare_parameter('model_path', default_model)
-        self.declare_parameter('conf_threshold', 0.65)
-        self.declare_parameter('iou_threshold', 0.35)
-        self.declare_parameter('imgsz', 640)
         self.declare_parameter('camera_name', 'wrist_right')
         self.declare_parameter('image_topic', '')
         self.declare_parameter('detections_topic', '/detections')
-        self.declare_parameter('debug_topic', '/detector_debug_image')
+        self.declare_parameter('debug_topic', '/detector_debug_image/nut')
         self.declare_parameter('frame_id', '')
+        self.declare_parameter('conf_threshold', 0.4)
+        self.declare_parameter('iou_threshold', 0.5)
+        self.declare_parameter('imgsz', 640)
         self.declare_parameter('publish_debug_image', True)
         self.declare_parameter('log_detections', True)
 
-        model_path = self.get_parameter('model_path').get_parameter_value().string_value
-        self.conf = self.get_parameter('conf_threshold').get_parameter_value().double_value
-        self.iou = self.get_parameter('iou_threshold').get_parameter_value().double_value
-        self.imgsz = self.get_parameter('imgsz').get_parameter_value().integer_value
-        self.camera_name = self.get_parameter('camera_name').get_parameter_value().string_value
-        image_topic = self.get_parameter('image_topic').get_parameter_value().string_value
-        detections_topic = (
-            self.get_parameter('detections_topic').get_parameter_value().string_value
-        )
-        debug_topic = self.get_parameter('debug_topic').get_parameter_value().string_value
-        self.frame_id_override = self.get_parameter('frame_id').get_parameter_value().string_value
-        self.publish_debug_image = (
-            self.get_parameter('publish_debug_image').get_parameter_value().bool_value
-        )
-        self.log_detections = self.get_parameter('log_detections').get_parameter_value().bool_value
+        model_path = self.get_parameter('model_path').value
+        self.camera_name = self.get_parameter('camera_name').value
+        image_topic = self.get_parameter('image_topic').value
+        detections_topic = self.get_parameter('detections_topic').value
+        debug_topic = self.get_parameter('debug_topic').value
+        self.frame_id_override = self.get_parameter('frame_id').value
+        self.conf = self.get_parameter('conf_threshold').value
+        self.iou = self.get_parameter('iou_threshold').value
+        self.imgsz = self.get_parameter('imgsz').value
+        self.publish_debug_image = self.get_parameter('publish_debug_image').value
+        self.log_detections = self.get_parameter('log_detections').value
 
         if not image_topic:
             image_topic = DEFAULT_IMAGE_TOPICS.get(self.camera_name, '')
@@ -87,11 +84,15 @@ class PartDetectorNode(Node):
                 f"camera_name={list(DEFAULT_IMAGE_TOPICS.keys())}."
             )
 
-        self.get_logger().info(f'Loading YOLO model: {model_path}')
+        self.get_logger().info(f'Loading nut model from {model_path}...')
         self.model = YOLO(model_path)
         self.bridge = CvBridge()
 
-        self.detection_pub = self.create_publisher(PartDetectionArray, detections_topic, 10)
+        self.detection_pub = self.create_publisher(
+            PartDetectionArray,
+            detections_topic,
+            10,
+        )
         self.debug_pub = None
         if self.publish_debug_image:
             self.debug_pub = self.create_publisher(Image, debug_topic, 10)
@@ -104,7 +105,7 @@ class PartDetectorNode(Node):
         )
 
         self.get_logger().info(
-            'PartDetectorNode ready. '
+            'NutDetectorNode ready. '
             f'camera_name={self.camera_name}, image_topic={image_topic}, '
             f'detections_topic={detections_topic}, debug_topic={debug_topic}, '
             f'conf={self.conf:.2f}, iou={self.iou:.2f}, imgsz={self.imgsz}'
@@ -114,7 +115,7 @@ class PartDetectorNode(Node):
         try:
             img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
         except Exception as exc:  # noqa: BLE001
-            self.get_logger().error(f'Failed to convert image message to OpenCV image: {exc}')
+            self.get_logger().error(f'Failed to convert image message: {exc}')
             return
 
         results = self.model.predict(
@@ -131,17 +132,15 @@ class PartDetectorNode(Node):
             det_array.header.frame_id = self.frame_id_override
 
         overlay = img.copy()
-        model_names = getattr(self.model, 'names', {}) or {}
-
         boxes = results.boxes if results.boxes is not None else []
         masks = results.masks.xy if results.masks is not None else None
 
         for idx, box in enumerate(boxes):
             cls = int(box.cls.item()) if hasattr(box.cls, 'item') else int(box.cls)
             conf = float(box.conf.item()) if hasattr(box.conf, 'item') else float(box.conf)
-            x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-            class_name = self._class_name(model_names, cls)
-            color = DEFAULT_COLORS[cls % len(DEFAULT_COLORS)]
+            x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
+            class_name = self._class_name(cls)
+            color = COLORS[cls % len(COLORS)]
 
             det = PartDetection()
             det.class_id = cls
@@ -184,22 +183,24 @@ class PartDetectorNode(Node):
             self.debug_pub.publish(debug_msg)
 
     @staticmethod
-    def _class_name(model_names, cls: int) -> str:
-        if isinstance(model_names, dict):
-            return str(model_names.get(cls, f'class_{cls}'))
-        if isinstance(model_names, (list, tuple)) and cls < len(model_names):
-            return str(model_names[cls])
-        return f'class_{cls}'
+    def _class_name(cls: int) -> str:
+        if 0 <= cls < len(CLASS_NAMES):
+            return CLASS_NAMES[cls]
+        return f'nut_{cls}'
 
     @staticmethod
-    def _draw_mask(overlay: np.ndarray, mask_xy: np.ndarray, color: Tuple[int, int, int]) -> None:
+    def _draw_mask(
+        overlay: np.ndarray,
+        mask_xy: np.ndarray,
+        color: Tuple[int, int, int],
+    ) -> None:
         pts = mask_xy.astype(np.int32)
         if pts.ndim != 2 or pts.shape[0] < 3:
             return
         mask_img = np.zeros_like(overlay)
         cv2.fillPoly(mask_img, [pts], color)
-        cv2.addWeighted(mask_img, 0.35, overlay, 1.0, 0.0, dst=overlay)
-        cv2.polylines(overlay, [pts], isClosed=True, color=color, thickness=2)
+        cv2.addWeighted(mask_img, 0.4, overlay, 1.0, 0.0, dst=overlay)
+        cv2.polylines(overlay, [pts], True, color, 2)
 
     def _draw_bbox(
         self,
@@ -214,13 +215,12 @@ class PartDetectorNode(Node):
     ) -> None:
         cv2.rectangle(overlay, (x1, y1), (x2, y2), color, 2)
         label = f'[{self.camera_name}] {class_name} {confidence:.2f}'
-        y_text = max(y1 - 10, 20)
         cv2.putText(
             overlay,
             label,
-            (x1, y_text),
+            (x1, max(y1 - 10, 20)),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
+            0.5,
             color,
             2,
             cv2.LINE_AA,
@@ -229,7 +229,7 @@ class PartDetectorNode(Node):
 
 def main(args=None) -> None:
     rclpy.init(args=args)
-    node = PartDetectorNode()
+    node = NutDetectorNode()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

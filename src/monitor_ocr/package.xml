@@ -4,7 +4,7 @@
   <name>monitor_ocr</name>
   <version>0.1.0</version>
   <description>대시보드 모니터 OCR ROS2 노드</description>
-  <maintainer email="dev@example.com">robot</maintainer>
+  <maintainer email="rnrqls0326@snu.ac.kr">robot</maintainer>
   <license>MIT</license>
 
   <depend>rclpy</depend>

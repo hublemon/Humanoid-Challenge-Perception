@@ -7,16 +7,31 @@
 #    bash ~/ai_worker/monitor_ocr/run_ocr.sh docker   # docker 컨테이너 실행
 #
 #  옵션 (환경변수로 재정의 가능):
-#    IMAGE_TOPIC=/zed/zed_node/rgb/image_rect_color
+#    IMAGE_TOPIC=/zed/zed_node/left/image_rect_color
 #    INTERVAL=2.0    (OCR 처리 주기, 초)
+#    OCR_MODE=parts  (parts | sequence | mission)
+#      parts    : 부품 수량 테이블 모드
+#      sequence : 부품 순차 조립 지령 모드 (Peg1~4 순서 인식)
+#      mission  : 기존 미션 형식 (포인트/버튼/제목)
 # ══════════════════════════════════════════════════════════════════════════════
 
-IMAGE_TOPIC="${IMAGE_TOPIC:-/zed/zed_node/rgb/image_rect_color}"
+IMAGE_TOPIC="${IMAGE_TOPIC:-/zed/zed_node/left/image_rect_color}"
 INTERVAL="${INTERVAL:-2.0}"
+OCR_MODE="${OCR_MODE:-parts}"
 MODE="${1:-local}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_WS="$(cd "$SCRIPT_DIR/../.." && pwd)"
+WORKSPACE="${WORKSPACE:-$DEFAULT_WS}"
+
+case "$OCR_MODE" in
+    parts)    MODE_ARG="-p parts_mode:=true"    ; RESULT_TOPIC="/monitor_ocr/parts"          ; ARRAY_TOPIC="/monitor_ocr/part_counts" ;;
+    sequence) MODE_ARG="-p sequence_mode:=true" ; RESULT_TOPIC="/monitor_ocr/sequence"       ; ARRAY_TOPIC="/monitor_ocr/sequence_codes" ;;
+    mission)  MODE_ARG=""                       ; RESULT_TOPIC="/monitor_ocr/mission_points" ; ARRAY_TOPIC="/monitor_ocr/button_active" ;;
+    *) echo "[!] 알 수 없는 OCR_MODE: $OCR_MODE (parts|sequence|mission 중 선택)"; exit 1 ;;
+esac
 
 echo "══════════════════════════════════════════"
-echo "  Monitor OCR 노드 시작 (부품 수량 모드)"
+echo "  Monitor OCR 노드 시작 (OCR_MODE=$OCR_MODE)"
 echo "  모드  : $MODE"
 echo "  토픽  : $IMAGE_TOPIC"
 echo "  주기  : ${INTERVAL}s"
@@ -24,8 +39,8 @@ echo "════════════════════════�
 echo ""
 
 echo "[*] OCR 노드 시작..."
-echo "    결과 확인: ros2 topic echo /monitor_ocr/parts"
-echo "    수량만  : ros2 topic echo /monitor_ocr/part_counts"
+echo "    결과 확인: ros2 topic echo $RESULT_TOPIC"
+echo "    배열만  : ros2 topic echo $ARRAY_TOPIC"
 echo "    종료    : Ctrl+C"
 echo ""
 
@@ -45,28 +60,28 @@ if [ "$MODE" = "docker" ]; then
         source /opt/ros/jazzy/setup.bash
         source /root/ros2_ws/install/setup.bash
         ros2 run monitor_ocr monitor_ocr_node --ros-args \
-            -p parts_mode:=true \
+            $MODE_ARG \
             -p image_topic:=$IMAGE_TOPIC \
             -p process_interval:=$INTERVAL
     "
 else
     # 로컬 직접 실행
     source /opt/ros/jazzy/setup.bash
-    WS=$(find ~/ros2_ws /root/ros2_ws 2>/dev/null -name "setup.bash" -path "*/install/*" | head -1)
+    WS=$(find "$WORKSPACE" ~/robotis_ros2_ws ~/ros2_ws /root/ros2_ws 2>/dev/null -name "setup.bash" -path "*/install/*" | head -1)
     if [ -n "$WS" ]; then
         source "$WS"
     else
         echo "[!] ros2_ws를 찾을 수 없습니다. 먼저 빌드하세요:"
-        echo "    cd ~/ros2_ws && colcon build --packages-select monitor_ocr"
+        echo "    cd $WORKSPACE && colcon build --packages-select monitor_ocr"
         exit 1
     fi
-    NODE=$(find ~/ros2_ws /root/ros2_ws 2>/dev/null -name "monitor_ocr_node" -path "*/install/*" | head -1)
+    NODE=$(find "$WORKSPACE" ~/robotis_ros2_ws ~/ros2_ws /root/ros2_ws 2>/dev/null -name "monitor_ocr_node" -path "*/install/*" | head -1)
     if [ -z "$NODE" ]; then
         echo "[!] monitor_ocr_node 실행파일을 찾을 수 없습니다."
         exit 1
     fi
     $NODE --ros-args \
-        -p parts_mode:=true \
+        $MODE_ARG \
         -p image_topic:=$IMAGE_TOPIC \
         -p process_interval:=$INTERVAL
 fi

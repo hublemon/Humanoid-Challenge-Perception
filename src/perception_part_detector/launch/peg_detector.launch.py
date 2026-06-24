@@ -1,32 +1,36 @@
+import os
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
-from ament_index_python.packages import get_package_share_directory
-import os
 
 
 def generate_launch_description():
-    default_model = os.path.join(
-        get_package_share_directory('perception_part_detector'),
-        'weights',
-        'best.pt',
-    )
-    config = os.path.join(
-        get_package_share_directory('perception_part_detector'),
-        'config',
-        'params.yaml',
-    )
+    pkg_share = get_package_share_directory('perception_part_detector')
+    config = os.path.join(pkg_share, 'config', 'peg_params.yaml')
+    model_path = os.path.join(pkg_share, 'weights', 'peg_best.pt')
 
     return LaunchDescription([
-        DeclareLaunchArgument('camera_name', default_value='wrist_right'),
-        DeclareLaunchArgument('image_topic', default_value=''),
-        DeclareLaunchArgument('detections_topic', default_value='/detections'),
-        DeclareLaunchArgument('debug_topic', default_value='/detector_debug_image'),
-        DeclareLaunchArgument('model_path', default_value=default_model),
+        DeclareLaunchArgument('model_path', default_value=model_path),
+        DeclareLaunchArgument('camera_name', default_value='head'),
+        DeclareLaunchArgument(
+            'image_topic',
+            default_value='/zed/zed_node/rgb/image_rect_color',
+        ),
+        DeclareLaunchArgument(
+            'detections_topic',
+            default_value='/perception/head/pipe_detections',
+        ),
+        DeclareLaunchArgument(
+            'debug_topic',
+            default_value='/perception/head/peg_detector_debug_image',
+        ),
         DeclareLaunchArgument('frame_id', default_value=''),
-        DeclareLaunchArgument('conf_threshold', default_value='0.65'),
+        DeclareLaunchArgument('output_class_name', default_value='pipe_opening'),
+        DeclareLaunchArgument('conf_threshold', default_value='0.1'),
         DeclareLaunchArgument('iou_threshold', default_value='0.35'),
         DeclareLaunchArgument('imgsz', default_value='640'),
         DeclareLaunchArgument('publish_debug_image', default_value='true'),
@@ -34,17 +38,18 @@ def generate_launch_description():
 
         Node(
             package='perception_part_detector',
-            executable='detector_node',
-            name='part_detector',
+            executable='peg_detector_node',
+            name='peg_detector',
             parameters=[
                 config,
                 {
+                    'model_path': LaunchConfiguration('model_path'),
                     'camera_name': LaunchConfiguration('camera_name'),
                     'image_topic': LaunchConfiguration('image_topic'),
                     'detections_topic': LaunchConfiguration('detections_topic'),
                     'debug_topic': LaunchConfiguration('debug_topic'),
-                    'model_path': LaunchConfiguration('model_path'),
                     'frame_id': LaunchConfiguration('frame_id'),
+                    'output_class_name': LaunchConfiguration('output_class_name'),
                     'conf_threshold': ParameterValue(
                         LaunchConfiguration('conf_threshold'),
                         value_type=float,

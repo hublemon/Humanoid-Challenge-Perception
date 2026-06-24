@@ -3,10 +3,11 @@
 #  monitor_ocr 배포 스크립트 (어느 컴퓨터에서든 실행 가능)
 #
 #  사전 조건:
-#    - 로봇과 같은 네트워크에 연결되어 있어야 함
+#    - 로봇과 같은 WiFi에 연결되어 있어야 함 (기본: AIWORKER1087)
 #    - docker 컨테이너 'ai_worker' 가 로봇에서 실행 중이어야 함
 #
 #  사용법:
+#    bash deploy.sh                          # 기본 로봇 주소 사용
 #    ROBOT=robotis@<robot-host-or-ip> ROBOT_PW=<password> bash deploy.sh
 #    bash deploy.sh robotis@<로봇IP>         # IP 직접 지정
 #    bash deploy.sh robotis@<로봇IP> <비번>  # 주소 + 비번 지정
@@ -15,17 +16,10 @@
 set -e
 
 # ── 설정 ──────────────────────────────────────────────────────────────────────
-ROBOT="${1:-${ROBOT:-robotis@robot.local}}"
-ROBOT_PW="${2:-${ROBOT_PW:-}}"
+ROBOT="${1:-${ROBOT:-robotis@ffw-SNPR48A1087.local}}"
+ROBOT_PW="${2:-${ROBOT_PW:-root}}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROBOT_DEST="~/ai_worker/monitor_ocr"
-
-if [ -z "$ROBOT_PW" ]; then
-    echo "[오류] ROBOT_PW가 비어 있습니다."
-    echo "  사용 예: ROBOT=robotis@<robot-host-or-ip> ROBOT_PW=<password> bash deploy.sh"
-    echo "  또는:    bash deploy.sh robotis@<robot-host-or-ip> <password>"
-    exit 1
-fi
 
 echo "══════════════════════════════════════════"
 echo "  Monitor OCR 배포"
@@ -111,9 +105,10 @@ echo "     docker exec -it ai_worker bash"
 echo "     ros2 launch ffw_bringup ffw_sg2_ai.launch.py"
 echo ""
 echo "  3) OCR 노드 실행 (터미널 2):"
-echo "     bash ~/ai_worker/monitor_ocr/run_ocr.sh"
+echo "     OCR_MODE=sequence bash ~/ai_worker/monitor_ocr/run_ocr.sh"
+echo "     # 또는 부품 수량 모드: bash ~/ai_worker/monitor_ocr/run_ocr.sh"
 echo ""
 echo "  4) 결과 확인 (노트북 또는 터미널 3):"
-echo "     ros2 topic echo /monitor_ocr/parts"
-echo "     ros2 topic echo /monitor_ocr/part_counts"
+echo "     ros2 topic echo /monitor_ocr/sequence"
+echo "     ros2 topic echo /monitor_ocr/sequence_codes"
 echo "══════════════════════════════════════════"

@@ -25,6 +25,8 @@ setup(
     entry_points={
         'console_scripts': [
             'detector_node = detector_node:main',
+            'nut_detector_node = perception_part_detector.nut_detector_node:main',
+            'peg_detector_node = perception_part_detector.peg_detector_node:main',
         ],
     },
 )

@@ -2,6 +2,7 @@
 
 import os
 import time
+import argparse
 from pathlib import Path
 
 import rclpy
@@ -11,15 +12,13 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPo
 
 
 TOPICS = {
-    "zed_rgb": "/zed/zed_node/rgb/image_rect_color",
-    "right": "/camera_right/camera_right/color/image_rect_raw",
+    "wrist": "/camera_right/camera_right/color/image_rect_raw",
 }
 
 TARGET_PER_TOPIC = int(os.environ.get("TARGET_PER_TOPIC", "200"))
-EVERY_N = int(os.environ.get("EVERY_N", "1"))
 
 STAMP = time.strftime("%Y%m%d_%H%M%S")
-OUT_ROOT = Path(os.environ.get("OUT_DIR", f"captures/zed_rgb_right_200_{STAMP}"))
+OUT_ROOT = Path(os.environ.get("OUT_DIR", f"captures/wrist_rgb_10hz_200_{STAMP}"))
 
 
 def stamp_name(msg: Image, fallback_count: int) -> str:
@@ -82,8 +81,11 @@ def image_to_file_bytes(msg: Image):
 
 
 class WristStereoSaver(Node):
-    def __init__(self):
+    def __init__(self, save_hz: float):
         super().__init__("wrist_stereo_image_saver")
+
+        self.save_hz = float(save_hz)
+        self.save_period_sec = 1.0 / self.save_hz if self.save_hz > 0.0 else 0.0
 
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -94,6 +96,7 @@ class WristStereoSaver(Node):
 
         self.received = {k: 0 for k in TOPICS}
         self.saved = {k: 0 for k in TOPICS}
+        self.last_saved_time = {k: None for k in TOPICS}
         self.done = False
 
         OUT_ROOT.mkdir(parents=True, exist_ok=True)
@@ -102,7 +105,7 @@ class WristStereoSaver(Node):
 
         self.get_logger().info(f"Saving to: {OUT_ROOT}")
         self.get_logger().info(f"Target: {TARGET_PER_TOPIC} images per topic")
-        self.get_logger().info(f"Save every {EVERY_N} frame(s)")
+        self.get_logger().info(f"Save rate: {self.save_hz:g} Hz")
 
         self.subs = []
         for name, topic in TOPICS.items():
@@ -123,7 +126,9 @@ class WristStereoSaver(Node):
 
         self.received[name] += 1
 
-        if self.received[name] % EVERY_N != 0:
+        now_sec = self.get_clock().now().nanoseconds * 1e-9
+        last_sec = self.last_saved_time[name]
+        if last_sec is not None and (now_sec - last_sec) < self.save_period_sec:
             return
 
         try:
@@ -133,6 +138,7 @@ class WristStereoSaver(Node):
             path.write_bytes(file_bytes)
 
             self.saved[name] += 1
+            self.last_saved_time[name] = now_sec
 
             if self.saved[name] % 20 == 0 or self.saved[name] == TARGET_PER_TOPIC:
                 self.get_logger().info(
@@ -153,8 +159,17 @@ class WristStereoSaver(Node):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--hz",
+        type=float,
+        default=float(os.environ.get("SAVE_HZ", "10.0")),
+        help="Image save rate in Hz. Default: 10.0",
+    )
+    args = parser.parse_args()
+
     rclpy.init()
-    node = WristStereoSaver()
+    node = WristStereoSaver(save_hz=args.hz)
 
     try:
         while rclpy.ok() and not node.done:

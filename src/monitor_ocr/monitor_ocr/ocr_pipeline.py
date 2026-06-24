@@ -37,9 +37,9 @@ _FALLBACK_BBOX = (58, 30, 406, 216)
 
 # YOLO 모델 (init_yolo() 호출 전까지 None)
 _yolo_model = None
-# YOLO warp 출력 크기 — 세로를 1.4배로 늘려 정면 촬영 시 상하 잘림 방지
+# YOLO warp 출력 크기 = FALLBACK bw x (bh * 1.1) 으로 ry>1 비율도 수용
 _WARP_W = _FALLBACK_BBOX[2]          # 406
-_WARP_H = int(_FALLBACK_BBOX[3] * 1.4)  # 302
+_WARP_H = int(_FALLBACK_BBOX[3] * 1.1)  # 237
 
 # 업스케일 배율
 _SC_TITLE = 6

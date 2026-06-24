@@ -1,0 +1,14 @@
+peg_detector:
+  ros__parameters:
+    camera_name: head
+    image_topic: /zed/zed_node/rgb/image_rect_color
+    detections_topic: /perception/head/pipe_detections
+    debug_topic: /perception/head/peg_detector_debug_image
+    frame_id: ""
+    output_class_name: pipe_opening
+
+    conf_threshold: 0.1
+    iou_threshold: 0.35
+    imgsz: 640
+    publish_debug_image: true
+    log_detections: true

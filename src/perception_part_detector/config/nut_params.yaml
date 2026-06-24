@@ -1,0 +1,13 @@
+nut_detector:
+  ros__parameters:
+    camera_name: wrist_right
+    image_topic: ""
+    detections_topic: /detections
+    debug_topic: /detector_debug_image/nut
+    frame_id: ""
+
+    conf_threshold: 0.4
+    iou_threshold: 0.5
+    imgsz: 640
+    publish_debug_image: true
+    log_detections: true

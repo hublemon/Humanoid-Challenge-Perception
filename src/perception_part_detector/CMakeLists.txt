@@ -25,6 +25,18 @@ install(PROGRAMS
   RENAME detector_node
 )
 
+install(PROGRAMS
+  perception_part_detector/nut_detector_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME nut_detector_node
+)
+
+install(PROGRAMS
+  perception_part_detector/peg_detector_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME peg_detector_node
+)
+
 install(DIRECTORY
   launch
   config

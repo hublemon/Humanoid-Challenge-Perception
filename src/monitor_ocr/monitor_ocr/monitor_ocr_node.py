@@ -12,7 +12,7 @@ Publish:
   /monitor_ocr/title           (std_msgs/String)       제목 텍스트
 
 Parameters:
-  image_topic      (str,   default='/zed/zed_node/rgb/image_rect_color')
+  image_topic      (str,   default='/zed/zed_node/left/image_rect_color')
   process_interval (float, default=2.0)  OCR 최소 주기 (초)
 """
 import json
@@ -29,8 +29,9 @@ from monitor_ocr.paddle_compat import make_ocr
 
 from monitor_ocr.ocr_pipeline import process_frame, init_yolo
 from monitor_ocr.ocr_pipeline_hq import process_frame_hq
-from monitor_ocr.ocr_pipeline_parts import process_frame_parts
-from monitor_ocr.frame_aggregator import FrameAggregator, FrameAggregatorParts
+from monitor_ocr.ocr_pipeline_parts import process_frame_parts, PART_NAMES
+from monitor_ocr.ocr_pipeline_sequence import process_frame_sequence, PEG_COUNT
+from monitor_ocr.frame_aggregator import FrameAggregator, FrameAggregatorParts, FrameAggregatorSequence
 
 
 class MonitorOCRNode(Node):
@@ -43,11 +44,18 @@ class MonitorOCRNode(Node):
         self.declare_parameter('process_interval', 2.0)
         self.declare_parameter('hq_mode',          False)
         self.declare_parameter('parts_mode',       False)
+        self.declare_parameter('sequence_mode',    False)
 
         image_topic           = self.get_parameter('image_topic').value
         self.process_interval = self.get_parameter('process_interval').value
         self._hq_mode         = self.get_parameter('hq_mode').value
         self._parts_mode      = self.get_parameter('parts_mode').value
+        self._sequence_mode   = self.get_parameter('sequence_mode').value
+
+        if self._parts_mode and self._sequence_mode:
+            self.get_logger().warn(
+                'parts_mode와 sequence_mode가 모두 true입니다. parts_mode를 우선합니다.')
+            self._sequence_mode = False
 
         # YOLO 모니터 감지 모델 초기화
         import os
@@ -76,6 +84,8 @@ class MonitorOCRNode(Node):
         self.bridge      = CvBridge()
         if self._parts_mode:
             self._aggregator = FrameAggregatorParts(window=10)
+        elif self._sequence_mode:
+            self._aggregator = FrameAggregatorSequence(window=10, peg_count=PEG_COUNT)
         else:
             self._aggregator = FrameAggregator(window=10, btn_window=3)
         self._lock           = threading.Lock()
@@ -92,6 +102,12 @@ class MonitorOCRNode(Node):
             self.pub_part_counts = self.create_publisher(Int32MultiArray, '/monitor_ocr/part_counts',  10)
             # 인식 완료 신호: 화면 감지 + 모든 수량 유효할 때 True
             self.pub_recognized  = self.create_publisher(Bool,            '/monitor_ocr/recognized',   10)
+        elif self._sequence_mode:
+            # 부품 순서 모드 전용 토픽
+            self.pub_sequence       = self.create_publisher(String,          '/monitor_ocr/sequence',       10)
+            self.pub_sequence_codes = self.create_publisher(Int32MultiArray, '/monitor_ocr/sequence_codes', 10)
+            # 인식 완료 신호: 화면 감지 + 모든 Peg 인식 완료일 때 True
+            self.pub_recognized     = self.create_publisher(Bool,            '/monitor_ocr/recognized',     10)
         else:
             # 기존 미션 모드 토픽
             self.pub_points = self.create_publisher(Int32MultiArray, '/monitor_ocr/mission_points', 10)
@@ -113,6 +129,8 @@ class MonitorOCRNode(Node):
         self.get_logger().info(f'OCR 주기: {self.process_interval}s')
         if self._parts_mode:
             self.get_logger().info('모드: PARTS (부품 수량 테이블)')
+        elif self._sequence_mode:
+            self.get_logger().info('모드: SEQUENCE (부품 순차 조립 지령)')
         else:
             self.get_logger().info(f'모드: {"HQ (고화질)" if self._hq_mode else "LQ (저화질 전처리)"}')
 
@@ -156,6 +174,14 @@ class MonitorOCRNode(Node):
                 try:
                     if self._parts_mode:
                         raw = process_frame_parts(self.ocr_kor, self.ocr_en, img)
+                        self.get_logger().info(
+                            f"RAW screen={raw.get('screen_detected')} "
+                            f"bbox={raw.get('bbox')} "
+                            f"col={raw.get('col_ratios')} "
+                            f"parts={raw.get('parts')}"
+                        )
+                    elif self._sequence_mode:
+                        raw = process_frame_sequence(self.ocr_kor, self.ocr_en, img)
                     elif self._hq_mode:
                         raw = process_frame_hq(self.ocr_kor, self.ocr_en, img)
                     else:
@@ -167,6 +193,11 @@ class MonitorOCRNode(Node):
                             f"{p['name']}:{p['count']}" for p in result['parts'])
                         self.get_logger().info(
                             f"[부품] {parts_log}  {raw['elapsed_ms']}ms"
+                            f"  ({result['frames_used']}프레임 집계)")
+                    elif self._sequence_mode:
+                        seq_log = " → ".join(n or "?" for n in result['sequence'])
+                        self.get_logger().info(
+                            f"[순서] {seq_log}  {raw['elapsed_ms']}ms"
                             f"  ({result['frames_used']}프레임 집계)")
                     else:
                         pts = result['mission_points']
@@ -205,6 +236,28 @@ class MonitorOCRNode(Node):
             recognized = (
                 r.get('latest_screen_detected', False)
                 and all(p['count'] >= 0 for p in r['parts'])
+            )
+            msg_recog = Bool()
+            msg_recog.data = recognized
+            self.pub_recognized.publish(msg_recog)
+        elif self._sequence_mode:
+            # Peg1..PegN 부품명 JSON
+            msg_seq = String()
+            msg_seq.data = json.dumps(r['sequence'], ensure_ascii=False)
+            self.pub_sequence.publish(msg_seq)
+
+            # 부품명 코드 배열 (PART_NAMES 인덱스+1, 미인식=-1)
+            msg_codes = Int32MultiArray()
+            msg_codes.data = [
+                PART_NAMES.index(n) + 1 if n in PART_NAMES else -1
+                for n in r['sequence']
+            ]
+            self.pub_sequence_codes.publish(msg_codes)
+
+            # 인식 완료: 화면 감지 + 모든 Peg 인식(빈 문자열 없음)
+            recognized = (
+                r.get('latest_screen_detected', False)
+                and all(n for n in r['sequence'])
             )
             msg_recog = Bool()
             msg_recog.data = recognized

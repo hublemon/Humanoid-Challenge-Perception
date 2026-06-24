@@ -12,6 +12,7 @@
   s  현재 프레임 저장 (./capture_NNNN.png)
 """
 import argparse
+from pathlib import Path
 import sys
 import threading
 import time
@@ -19,7 +20,7 @@ import time
 import cv2
 import numpy as np
 
-sys.path.insert(0, '/ws/src/monitor_ocr')
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from paddleocr import PaddleOCR
 from monitor_ocr.ocr_pipeline import find_display
 from monitor_ocr.ocr_pipeline import process_frame

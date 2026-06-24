@@ -2,7 +2,7 @@ part_detector:
   ros__parameters:
     # camera_name may be one of: head, wrist_left, wrist_right.
     # If image_topic is empty, detector_node.py chooses the default topic for camera_name.
-    camera_name: head
+    camera_name: wrist_right
     image_topic: ""
 
     detections_topic: /detections

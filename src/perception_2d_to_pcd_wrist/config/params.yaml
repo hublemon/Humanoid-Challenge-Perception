@@ -3,6 +3,7 @@
 
 wrist_task_grasp_planner_node:
   ros__parameters:
+    # Topics.
     rgb_topic: "/camera_right/camera_right/color/image_rect_raw"
     depth_topic: "/camera_right/camera_right/depth/image_rect_raw"
     rgb_info_topic: "/camera_right/camera_right/color/camera_info"
@@ -13,59 +14,64 @@ wrist_task_grasp_planner_node:
     out_pose_topic: "/perception/wrist/target_one_pose"
     out_target_detection_topic: "/perception/wrist/target_one_detection"
 
+    # Frames.
     base_frame: "base_link"
     rgb_frame: ""
     depth_frame: ""
     camera_name: "wrist_right"
     use_latest_tf_on_zero_stamp: true
 
+    # Depth filtering.
     depth_scale: 0.001
     invalid_depth_values: [0, 65535]
     min_depth_m: 0.1
     max_depth_m: 3.0
 
+    # Depth-to-color extrinsics.
     use_tf_for_extrinsics: true
     extrinsics_rotation: [0.9999939203262329, -0.0015899674035608768, -0.003109483979642391,
                           0.0015913281822577119, 0.9999986290931702, 0.00043518951861187816,
                           0.003108787816017866, -0.00044013507431373, 0.9999950528144836]
     extrinsics_translation: [-9.677278285380453e-06, 1.0000000656873453e-05, 1.0000000656873453e-05]
 
+    # Task gating.
     allow_all_without_task: false
     require_screen_detected: false
     task_timeout_sec: 10.0
 
     class_alias_json: '{"플랜지 너트":"flange_nut","플랜지너트":"flange_nut","기어 링":"gear_ring","기어링":"gear_ring","스페이서 링":"spacer_ring","스페이서링":"spacer_ring","육각 너트":"hex_nut","육각너트":"hex_nut","dom nut":"dome_nut","dom_nut":"dome_nut","dome nut":"dome_nut","dome_nut":"dome_nut","돔 너트":"dome_nut","돔너트":"dome_nut"}'
 
+    # Candidate extraction.
     min_confidence: 0.0
     min_candidate_points: 20
-    min_score_to_publish: 0.20
     mask_erosion_px: 2
     pixel_step: 1
     robust_iqr_filter_enable: true
     robust_iqr_multiplier: 2.5
 
+    # Optional tray ROI gate. [0, 0, 0, 0] means full image.
     tray_roi: [0, 0, 0, 0]
     require_inside_tray_roi: false
 
+    # Scoring.
+    min_score_to_publish: 0.20
     # If arm_reference_frame is empty, arm_reference_xyz is interpreted in base_frame.
     # If arm_reference_frame is set, arm_reference_xyz is interpreted in that frame.
     arm_reference_frame: ""
     arm_reference_xyz: [0.0, 0.0, 0.0]
     max_arm_distance_m: 0.60
-
     weight_confidence: 0.45
     weight_arm_proximity: 0.55
 
+    # Synchronization, logging, temporal smoothing, and republish.
     sync_slop: 0.10
     sync_queue: 10
     log_rankings: true
     log_top_k: 5
-
     temporal_smoothing_enable: true
     temporal_window_sec: 0.8
     temporal_min_observations: 2
     temporal_position_gate_m: 0.06
     temporal_max_history: 50
-
     republish_last_pose_hz: 2.0
     hold_last_pose_sec: 2.0

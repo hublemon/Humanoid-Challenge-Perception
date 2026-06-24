@@ -18,6 +18,7 @@ import difflib
 import numpy as np
 import re
 import time
+import os
 
 from monitor_ocr.ocr_pipeline import find_display, find_display_yolo
 from monitor_ocr.paddle_compat import ocr_recog_only, ocr_run
@@ -161,7 +162,8 @@ def _detect_column_ratios(table_img: np.ndarray):
     if not count_seps:
         return _NAME_X, _COUNT_X
 
-    sep2 = count_seps[0]
+    # count_seps[-1]: 가장 오른쪽 구분선 사용 (이름 영역 내부 오검출 제외)
+    sep2 = count_seps[-1]
     # icon_seps 없으면 기본값 사용 (아이콘 열 폭 고정)
     sep1 = icon_seps[0] if icon_seps else _NAME_X[0]
     if sep1 >= sep2:
@@ -383,11 +385,17 @@ def process_frame_parts(ocr_kor, ocr_en, img: np.ndarray) -> dict:
     bh  = min(H - by, bh + row_ext)
     table_crop      = work_img[by:by+bh, bx:bx+bw]
     name_x, count_x = _detect_column_ratios(table_crop)
+    DEBUG_DIR = "/captures/monitor_ocr_debug"
+    os.makedirs(DEBUG_DIR, exist_ok=True)
+
+    cv2.imwrite(os.path.join(DEBUG_DIR, "00_work_img.png"), work_img)
+    cv2.imwrite(os.path.join(DEBUG_DIR, "01_table_crop.png"), table_crop)
 
     # ── 이름 열 전체 OCR (det=True → 박스 y좌표 확보) ────────────────────────
     nx1 = max(0, int(bx + name_x[0] * bw))
     nx2 = min(W, int(bx + name_x[1] * bw))
     name_col = work_img[by:by+bh, nx1:nx2]
+    cv2.imwrite(os.path.join(DEBUG_DIR, "02_name_col.png"), name_col)
 
     # 같은 행의 분리된 토큰을 y좌표 기준으로 묶어 합칩니다.
     # ("기어"+"링" → "기어 링", "플랜지"+"너트" → "플랜지 너트" 등)
@@ -431,6 +439,13 @@ def process_frame_parts(ocr_kor, ocr_en, img: np.ndarray) -> dict:
     # 마지막 행 숫자가 bbox 하단에 걸릴 수 있으므로 아래로 확장
     cy2 = min(H, by + bh + int(bh * _COUNT_BOT_EXT))
     count_col = work_img[by:cy2, cx1:cx2]
+    cv2.imwrite(os.path.join(DEBUG_DIR, "03_count_col.png"), count_col)
+
+    debug_vis = work_img.copy()
+    cv2.rectangle(debug_vis, (bx, by), (bx + bw, by + bh), (0, 255, 0), 2)
+    cv2.rectangle(debug_vis, (nx1, by), (nx2, by + bh), (255, 0, 0), 2)
+    cv2.rectangle(debug_vis, (cx1, by), (cx2, cy2), (0, 0, 255), 2)
+    cv2.imwrite(os.path.join(DEBUG_DIR, "04_debug_boxes.png"), debug_vis)
 
     counts_y: list[tuple[float, int]] = []  # (y_ratio, count)
     for scale in (4, 2, 6):

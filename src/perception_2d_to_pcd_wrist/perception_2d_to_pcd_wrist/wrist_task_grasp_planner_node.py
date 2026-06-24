@@ -874,17 +874,11 @@ class WristTaskGraspPlannerNode(Node):
         timeout_sec: float,
         warn: bool,
     ) -> Optional[np.ndarray]:
-        stamp = self.latest_depth_stamp
-
-        is_zero = (stamp.sec == 0 and stamp.nanosec == 0)
-        lookup_time = rclpy.time.Time()
-
-        if not (is_zero and self.use_latest_tf_on_zero_stamp):
-            lookup_time = rclpy.time.Time.from_msg(stamp)
+        lookup_time = rclpy.time.Time()  # latest TF
 
         pt = PointStamped()
         pt.header.frame_id = self.rgb_frame
-        pt.header.stamp = stamp
+        pt.header.stamp = lookup_time.to_msg()
         pt.point.x = float(point_color[0])
         pt.point.y = float(point_color[1])
         pt.point.z = float(point_color[2])
@@ -896,7 +890,6 @@ class WristTaskGraspPlannerNode(Node):
                 lookup_time,
                 timeout=rclpy.duration.Duration(seconds=timeout_sec)
             )
-
         except (
             tf2_ros.LookupException,
             tf2_ros.ConnectivityException,

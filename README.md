@@ -8,6 +8,7 @@ ROBOTIS ROS 2 Jazzy Docker 환경에서 사용하는 perception/OCR 워크스페
 | Package | Purpose |
 | --- | --- |
 | `perception_part_detector` | YOLO 기반 부품 탐지 및 custom detection message 발행 |
+| `perception_head_pipe` | Head RGB-D pipe opening detection을 `base_link` 기준 top-center PoseArray로 변환 |
 | `perception_2d_to_pcd` | Head ZED 카메라의 2D detection을 `base_link` 기준 3D pose/PointCloud로 변환 |
 | `perception_2d_to_pcd_wrist` | Wrist RealSense 카메라의 비정렬 RGB-D를 재투영해 3D pose/PointCloud 생성 |
 | `monitor_ocr` | 모니터 화면 OCR 및 부품 수량/미션 상태 토픽 발행 |
@@ -18,6 +19,7 @@ ROBOTIS ROS 2 Jazzy Docker 환경에서 사용하는 perception/OCR 워크스페
 robotis_ros2_ws/
 ├── src/
 │   ├── perception_part_detector/
+│   ├── perception_head_pipe/
 │   ├── perception_2d_to_pcd/
 │   ├── perception_2d_to_pcd_wrist/
 │   └── monitor_ocr/
@@ -132,6 +134,7 @@ Build only selected packages:
 
 ```bash
 colcon build --packages-select perception_part_detector
+colcon build --packages-up-to perception_head_pipe
 colcon build --packages-select perception_2d_to_pcd
 colcon build --packages-select perception_2d_to_pcd_wrist
 colcon build --packages-select monitor_ocr
@@ -149,6 +152,12 @@ Head camera 2D to 3D:
 
 ```bash
 ros2 launch perception_2d_to_pcd all.launch.py
+```
+
+Head pipe top centers:
+
+```bash
+ros2 launch perception_head_pipe head_pipe_pipeline.launch.py
 ```
 
 Wrist camera 2D to 3D:
