@@ -1,15 +1,15 @@
-nut_detector:
+green_button_detector:
   ros__parameters:
-    part_name: nut
+    part_name: green_button
     head_topic: /zed/zed_node/rgb/image_rect_color
     wrist_left_topic: /camera_left/camera_left/color/image_rect_raw
     wrist_right_topic: /camera_right/camera_right/color/image_rect_raw
-    detections_topic: /detections
+    detections_topic: /detections/scenario_c/green_button
     mode: simple
     parent_class: ""
     child_class: ""
     index_by_x: false
     fit_ellipse: false
-    conf_threshold: 0.65
+    conf_threshold: 0.5
     iou_threshold: 0.35
     imgsz: 640

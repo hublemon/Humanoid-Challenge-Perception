@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge
+from ultralytics import YOLO
+from ament_index_python.packages import get_package_share_directory
+from perception_part_detector.msg import PartDetection, PartDetectionArray
+import numpy as np
+import cv2
+import os
+
+PIPE_CLASS_ID = 0
+PIPE_OPENING_CLASS_ID = 1
+
+
+class PipeDetectorNode(Node):
+    def __init__(self):
+        super().__init__('pipe_detector')
+
+        pkg_dir = get_package_share_directory('perception_part_detector')
+        default_model = os.path.join(pkg_dir, 'weights', 'pipe_best.pt')
+        self.declare_parameter('model_path', default_model)
+        self.declare_parameter('camera_name', 'head')
+        self.declare_parameter('image_topic', '/zed/zed_node/rgb/image_rect_color')
+        self.declare_parameter('detections_topic', '/detections')
+        self.declare_parameter('conf_threshold', 0.65)
+        self.declare_parameter('iou_threshold', 0.35)
+        self.declare_parameter('imgsz', 640)
+
+        model_path = self.get_parameter('model_path').value
+        detections_topic = self.get_parameter('detections_topic').value
+        self.conf = self.get_parameter('conf_threshold').value
+        self.iou = self.get_parameter('iou_threshold').value
+        self.imgsz = self.get_parameter('imgsz').value
+
+        self.get_logger().info(f'Loading model from {model_path}...')
+        self.model = YOLO(model_path)
+        self.bridge = CvBridge()
+
+        cameras = [
+            ('head',        '/zed/zed_node/rgb/image_rect_color'),
+            ('wrist_left',  '/camera_left/camera_left/color/image_rect_raw'),
+            ('wrist_right', '/camera_right/camera_right/color/image_rect_raw'),
+        ]
+        for camera_name, topic in cameras:
+            self.create_subscription(
+                Image, topic,
+                lambda msg, name=camera_name: self.image_cb(msg, name),
+                qos_profile_sensor_data)
+
+        self.detections_pub = self.create_publisher(
+            PartDetectionArray, detections_topic, 10)
+        self.debug_pub_head = self.create_pulisher(Image, '/detector_debug_image/peg/head', 10)
+        self.debug_pub_wrist_left = self.create_publisher(Image, '/detector_debug_image/peg/wrist_left', 10)
+        self.debug_pub_wrist_right = self.create_publisher(Image, '/detector_debug_image/peg/wrist_right', 10)
+
+        self.get_logger().info('PegDetectorNode ready.')
+
+    def image_cb(self, msg, source):
+        img = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
+
+        results = self.model.predict(
+            img,
+            conf=self.conf,
+            iou=self.iou,
+            imgsz=self.imgsz,
+            verbose=False)[0]
+
+        self.get_logger().info(f'추론: boxes={len(results.boxes) if results.boxes is not None else 0}, masks={results.masks is not None}, conf={self.conf}')
+
+        if results.masks is None:
+            self.detections_pub.publish(PartDetectionArray())
+            return
+
+        pipes = []
+        pipe_openings = []
+
+        for i, box in enumerate(results.boxes):
+            cls = int(box.cls)
+            mask_pts = results.masks.xy[i]
+
+            if len(mask_pts) < 3:
+                continue
+
+            entry = {
+                'conf': float(box.conf),
+                'bbox': list(map(int, box.xyxy[0])),
+                'mask_pts': mask_pts,
+                'center_x': float(np.mean(mask_pts[:, 0])),
+                'center_y': float(np.mean(mask_pts[:, 1])),
+            }
+
+            if cls == PIPE_CLASS_ID:
+                pipes.append(entry)
+            elif cls == PIPE_OPENING_CLASS_ID:
+                pipe_openings.append(entry)
+
+        valid_openings = self._match_openings_to_pipes(pipe_openings, pipes)
+        self.get_logger().info(f'pipes={len(pipes)}, openings={len(pipe_openings)}, matched={len(valid_openings)}')
+        valid_openings.sort(key=lambda o: o['center_x'])
+
+        detection_array = PartDetectionArray()
+        for idx, opening in enumerate(valid_openings):
+            mask_pts = opening['mask_pts']
+            center_x = opening['center_x']
+            center_y = opening['center_y']
+
+            try:
+                ellipse = cv2.fitEllipse(mask_pts.astype(np.float32))
+                smooth_pts = cv2.ellipse2Poly(
+                    (int(ellipse[0][0]), int(ellipse[0][1])),
+                    (max(1, int(ellipse[1][0] / 2)), max(1, int(ellipse[1][1] / 2))),
+                    int(ellipse[2]), 0, 360, 5)
+                mask_pts = smooth_pts.astype(np.float32)
+                center_x = float(ellipse[0][0])
+                center_y = float(ellipse[0][1])
+            except cv2.error:
+                pass
+
+            det = PartDetection()
+            det.class_name = f'pipe_{idx}'
+            det.class_id = idx
+            det.center_x = center_x
+            det.center_y = center_y
+            det.mask_x = mask_pts[:, 0].tolist()
+            det.mask_y = mask_pts[:, 1].tolist()
+            det.bbox = opening['bbox']
+            det.confidence = opening['conf']
+            det.source_camera = source
+            detection_array.detections.append(det)
+
+        self.detections_pub.publish(detection_array)
+
+        overlay = img.copy()
+        for idx, det in enumerate(detection_array.detections):
+            pts = np.array(list(zip(det.mask_x, det.mask_y)), dtype=np.int32)
+            cv2.polylines(overlay, [pts], True, (0, 255, 0), 2)
+            cv2.putText(overlay, det.class_name,
+                        (int(det.center_x), int(det.center_y)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        debug_msg = self.bridge.cv2_to_imgmsg(overlay, 'bgr8')
+        debug_msg.header = msg.header
+        if source == 'head':
+            self.debug_pub_head.publish(debug_msg)
+        elif source == 'wrist_left':
+            self.debug_pub_wrist_left.publish(debug_msg)
+        elif source == 'wrist_right':
+            self.debug_pub_wrist_right.publish(debug_msg)
+
+    def _match_openings_to_pipes(self, pipe_openings, pipes):
+        valid = []
+        my = 10 # y 방향 margin
+    
+        # 디버그: 모든 좌표 출력
+        for i, p in enumerate(pipes):
+            self.get_logger().info(f'  pipe[{i}] bbox={p["bbox"]}')
+        for i, o in enumerate(pipe_openings):
+            self.get_logger().info(f'  opening[{i}] center=({o["center_x"]:.0f}, {o["center_y"]:.0f})')
+    
+        for opening in pipe_openings:
+            cx, cy = opening['center_x'], opening['center_y']
+            for pipe in pipes:
+                x1, y1, x2, y2 = pipe['bbox']
+                if x1 <= cx <= x2 and (y1 - my) <= cy <= (y2 + my):
+                    valid.append(opening)
+                    break
+        return valid
+
+
+def main():
+    rclpy.init()
+    node = PipeDetectorNode()
+    try:
+        rclpy.spin(node)
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()

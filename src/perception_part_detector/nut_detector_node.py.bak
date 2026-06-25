@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge
+from ultralytics import YOLO
+from ament_index_python.packages import get_package_share_directory
+from perception_part_detector.msg import PartDetection, PartDetectionArray
+import numpy as np
+import cv2
+import os
+
+class NutDetectorNode(Node):
+    def __init__(self):
+        super().__init__('nut_detector')
+        pkg_dir = get_package_share_directory('perception_part_detector')
+        default_model = os.path.join(pkg_dir, 'weights', 'nut_best.pt')
+        self.declare_parameter('model_path', default_model)
+        self.declare_parameter('conf_threshold', 0.65)
+        self.declare_parameter('iou_threshold', 0.35)
+        self.declare_parameter('imgsz', 640)
+        model_path = self.get_parameter('model_path').value
+        self.conf = self.get_parameter('conf_threshold').value
+        self.iou = self.get_parameter('iou_threshold').value
+        self.imgsz = self.get_parameter('imgsz').value
+        self.get_logger().info(f'Loading model from {model_path}...')
+        self.model = YOLO(model_path)
+        self.bridge = CvBridge()
+        self.class_names = ['flange_nut', 'gear_ring', 'spacer_ring', 'hex_nut', 'dome_nut']
+        self.colors = [(255,100,100),(100,255,100),(100,100,255),(255,255,100),(255,100,255)]
+        self.create_subscription(Image, '/zed/zed_node/rgb/image_rect_color', lambda msg: self.image_cb(msg, 'head'), qos_profile_sensor_data)
+        self.create_subscription(Image, '/camera_left/camera_left/color/image_rect_raw', lambda msg: self.image_cb(msg, 'wrist_left'), qos_profile_sensor_data)
+        self.create_subscription(Image, '/camera_right/camera_right/color/image_rect_raw', lambda msg: self.image_cb(msg, 'wrist_right'), qos_profile_sensor_data)
+        self.detection_pub = self.create_publisher(PartDetectionArray, '/detections', 10)
+        self.debug_pub_head = self.create_publisher(Image, '/detector_debug_image/nut/head', 10)
+        self.debug_pub_wrist_left = self.create_publisher(Image, '/detector_debug_image/nut/wrist_left', 10)
+        self.debug_pub_wrist_right = self.create_publisher(Image, '/detector_debug_image/nut/wrist_right', 10)
+        self.get_logger().info('PartDetectorNode ready.')
+
+    def image_cb(self, msg, source):
+        img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
+        if len(img.shape) == 2:
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        elif img.shape[2] == 4:
+            img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
+        results = self.model.predict(img, conf=self.conf, iou=self.iou, imgsz=self.imgsz, verbose=False)[0]
+        det_array = PartDetectionArray()
+        det_array.header = msg.header
+        overlay = img.copy()
+        for i, box in enumerate(results.boxes):
+            cls = int(box.cls)
+            conf = float(box.conf)
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            color = self.colors[cls]
+            det = PartDetection()
+            det.class_id = cls
+            det.class_name = self.class_names[cls]
+            det.confidence = conf
+            det.bbox = [x1, y1, x2, y2]
+            det.source_camera = source
+            if results.masks is not None:
+                mask_xy = results.masks.xy[i]
+                det.mask_x = mask_xy[:, 0].tolist()
+                det.mask_y = mask_xy[:, 1].tolist()
+                det.center_x = float(np.mean(mask_xy[:, 0]))
+                det.center_y = float(np.mean(mask_xy[:, 1]))
+                pts = mask_xy.astype(np.int32)
+                mask_img = np.zeros_like(img)
+                cv2.fillPoly(mask_img, [pts], color)
+                overlay = cv2.addWeighted(overlay, 1.0, mask_img, 0.4, 0)
+                cv2.polylines(overlay, [pts], True, color, 2)
+            else:
+                det.center_x = float((x1 + x2) / 2)
+                det.center_y = float((y1 + y2) / 2)
+            det_array.detections.append(det)
+            cv2.rectangle(overlay, (x1, y1), (x2, y2), color, 2)
+            label = f'[{source}] {self.class_names[cls]} {conf:.2f}'
+            cv2.putText(overlay, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            self.get_logger().info(f'[{source}] {self.class_names[cls]} conf={conf:.2f} bbox=[{x1},{y1},{x2},{y2}] center=({det.center_x:.0f},{det.center_y:.0f})')
+        self.detection_pub.publish(det_array)
+        debug_msg = self.bridge.cv2_to_imgmsg(overlay, 'bgr8')
+        debug_msg.header = msg.header
+        if source == 'head':
+            self.debug_pub_head.publish(debug_msg)
+        elif source == 'wrist_left':
+            self.debug_pub_wrist_left.publish(debug_msg)
+        elif source == 'wrist_right':
+            self.debug_pub_wrist_right.publish(debug_msg)
+
+def main():
+    rclpy.init()
+    node = NutDetectorNode()
+    try:
+        rclpy.spin(node)
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+if __name__ == '__main__':
+    main()

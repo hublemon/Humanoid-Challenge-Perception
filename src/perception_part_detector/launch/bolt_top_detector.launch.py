@@ -5,7 +5,7 @@ import os
 
 def generate_launch_description():
     pkg_share = get_package_share_directory('perception_part_detector')
-    part_name = 'nut'
+    part_name = 'bolt_top'
     config = os.path.join(pkg_share, 'config', f'{part_name}_params.yaml')
     model_path = os.path.join(pkg_share, 'weights', f'{part_name}_best.pt')
 

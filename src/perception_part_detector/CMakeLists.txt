@@ -1,16 +1,10 @@
 cmake_minimum_required(VERSION 3.8)
 project(perception_part_detector)
 
-if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  add_compile_options(-Wall -Wextra -Wpedantic)
-endif()
-
 find_package(ament_cmake REQUIRED)
+find_package(ament_cmake_python REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(std_msgs REQUIRED)
-find_package(sensor_msgs REQUIRED)
-find_package(rclpy REQUIRED)
-find_package(cv_bridge REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/PartDetection.msg"
@@ -18,29 +12,27 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   DEPENDENCIES std_msgs
 )
 
-ament_export_dependencies(rosidl_default_runtime)
-install(PROGRAMS
-  detector_node.py
-  DESTINATION lib/${PROJECT_NAME}
-  RENAME detector_node
+# Explicitly compute PYTHON_INSTALL_DIR for the active Python (3.10 on Humble, 3.12 on Jazzy, etc.)
+# Both macros have internal guards so calling them multiple times is safe.
+_ament_cmake_python_get_python_install_dir()
+_ament_cmake_python_register_environment_hook()
+
+# Merge our Python source files into the same package rosidl created in site-packages.
+install(
+  DIRECTORY perception_part_detector/
+  DESTINATION ${PYTHON_INSTALL_DIR}/perception_part_detector
+  PATTERN "*.pyc" EXCLUDE
+  PATTERN "__pycache__" EXCLUDE
 )
 
-install(PROGRAMS
-  perception_part_detector/nut_detector_node.py
+# ros2 run perception_part_detector detector
+install(
+  PROGRAMS perception_part_detector/detector_node.py
+  RENAME detector
   DESTINATION lib/${PROJECT_NAME}
-  RENAME nut_detector_node
 )
 
-install(PROGRAMS
-  perception_part_detector/peg_detector_node.py
-  DESTINATION lib/${PROJECT_NAME}
-  RENAME peg_detector_node
-)
-
-install(DIRECTORY
-  launch
-  config
-  weights
+install(DIRECTORY launch config weights
   DESTINATION share/${PROJECT_NAME}
 )
 
