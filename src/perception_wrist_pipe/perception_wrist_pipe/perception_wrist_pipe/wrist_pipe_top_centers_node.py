@@ -186,6 +186,7 @@ class WristPipeTopCentersNode(Node):
         self.declare_parameter('allow_latest_tf_fallback', True)
         self.declare_parameter('output_stamp_policy', 'now')
         self.declare_parameter('log_targets', True)
+        self.declare_parameter('log_xy_debug', False)
 
         gp = self.get_parameter
         self.rgb_topic = str(gp('rgb_topic').value)
@@ -246,6 +247,7 @@ class WristPipeTopCentersNode(Node):
         self.allow_latest_tf_fallback = bool(gp('allow_latest_tf_fallback').value)
         self.output_stamp_policy = str(gp('output_stamp_policy').value).lower()
         self.log_targets = bool(gp('log_targets').value)
+        self.log_xy_debug = bool(gp('log_xy_debug').value)
 
         self.bridge = CvBridge()
         self._lock = threading.Lock()
@@ -449,6 +451,13 @@ class WristPipeTopCentersNode(Node):
             )
             self.get_logger().info(f'Published {len(candidates)} wrist pipe top centers in {self.base_frame}: {msg}')
 
+        if self.log_xy_debug:
+            xy_msg = ', '.join(
+                f'#{i} uv=({c.u:.1f},{c.v:.1f}) → XY_base=({c.pose.position.x:.4f},{c.pose.position.y:.4f})'
+                for i, c in enumerate(candidates)
+            )
+            self.get_logger().info(f'[xy_debug] 2D→3D XY summary: {xy_msg}')
+
     # =====================================================================
     # Detection filtering
     # =====================================================================
@@ -489,6 +498,22 @@ class WristPipeTopCentersNode(Node):
         ellipse = self.opening_detection_ellipse(det, det_mask, bbox, rgb_h, rgb_w)
         if ellipse is None or not self.ellipse_passes_sanity(ellipse):
             return None
+
+        if self.log_xy_debug:
+            (ell_u, ell_v), _, _ = ellipse
+            try:
+                det_cx, det_cy = float(det.center_x), float(det.center_y)
+                # After opening_detection_ellipse, ell_u/v equals det center iff detector center was accepted
+                detector_used = abs(det_cx - ell_u) < 1e-3 and abs(det_cy - ell_v) < 1e-3
+                center_src = 'detector' if detector_used else 'ellipse_fit(detector_rejected)'
+            except Exception:
+                det_cx, det_cy = float('nan'), float('nan')
+                center_src = 'ellipse_fit'
+            self.get_logger().info(
+                f'[xy_debug] det center=({det_cx:.1f},{det_cy:.1f}) '
+                f'ellipse_center=({ell_u:.1f},{ell_v:.1f}) '
+                f'used=({ell_u:.1f},{ell_v:.1f}) src={center_src}'
+            )
 
         ring = self.build_ellipse_ring_mask(
             ellipse,
@@ -862,12 +887,35 @@ class WristPipeTopCentersNode(Node):
                 if n_inliers >= self.plane_fit_min_points and resid_ok:
                     center = self.ray_plane_intersection(u_center, v_center, normal, offset, rgb_info)
                     if center is not None:
+                        if self.log_xy_debug:
+                            tilt_deg = math.degrees(math.acos(min(1.0, abs(float(normal[2])))))
+                            self.get_logger().info(
+                                f'[xy_debug] method=plane_fit '
+                                f'ring_pts={pts.shape[0]} inliers={n_inliers} '
+                                f'resid={mean_resid*1000:.2f}mm '
+                                f'tilt={tilt_deg:.1f}deg '
+                                f'3D_color=({center[0]:.4f},{center[1]:.4f},{center[2]:.4f})'
+                            )
                         return center
+                elif self.log_xy_debug:
+                    self.get_logger().warn(
+                        f'[xy_debug] plane_fit rejected: inliers={n_inliers} '
+                        f'resid={mean_resid*1000:.2f}mm → falling back to z_median'
+                    )
+            elif self.log_xy_debug:
+                self.get_logger().warn('[xy_debug] plane_fit SVD failed → falling back to z_median')
 
         z_median = float(np.median(z))
         if not (self.min_depth_m <= z_median <= self.max_depth_m):
             return None
-        return self.backproject_single_color(u_center, v_center, z_median, rgb_info)
+        center_fallback = self.backproject_single_color(u_center, v_center, z_median, rgb_info)
+        if self.log_xy_debug:
+            self.get_logger().warn(
+                f'[xy_debug] method=z_median_fallback '
+                f'ring_pts={pts.shape[0]} z_median={z_median:.4f}m '
+                f'3D_color=({center_fallback[0]:.4f},{center_fallback[1]:.4f},{center_fallback[2]:.4f})'
+            )
+        return center_fallback
 
     @staticmethod
     def mask_membership(u: np.ndarray, v: np.ndarray, mask: np.ndarray) -> np.ndarray:
