@@ -30,9 +30,9 @@ N_ROWS = len(PART_NAMES)
 # ── 열 x 비율 폴백값 (bbox 기준, 시나리오A "부품 선별 지령" 양식 실측 캘리브레이션) ──
 # 이 양식은 열 구분 세로선이 없어 Hough 감지가 항상 실패 → 폴백값이 실질적 기본값.
 _NAME_X  = (0.22, 0.87)
-_COUNT_X = (0.72, 0.995)
-# 카메라 각도에 따라 perspective warp 후에도 잔여 shear(행이 내려갈수록 좌측으로
-# 드리프트)가 남아 좁은 열 폭으로는 하단 행 숫자가 잘림 → 폭을 넉넉히 잡는다.
+_COUNT_X = (0.80, 0.995)
+# 수량 열은 테이블 우측 약 10~15% 구간. 잔여 perspective 고려해 시작점을 약간 넓히되,
+# 컨투어 필터(단일 자리 숫자 폭)로 부품명 영문 텍스트 오검출을 차단한다.
 
 # ── 업스케일 배율 ──────────────────────────────────────────────────────────────
 _SC_NAME  = 4
@@ -41,7 +41,7 @@ _SC_COUNT = 6
 # ── 행 y 패딩 ───────────────────────────────────────────────────────────────────
 _ROW_PAD        = 0.018  # 이름 크롭: 위아래 패딩 (행 경계선 제외)
 _COUNT_TOP_PAD  = 0.018  # 수량 크롭: 상단 패딩 (= _ROW_PAD; 이전 행 블리드는 최하단 숫자 선택으로 처리)
-_COUNT_BOT_EXT  = 0.12   # 수량 크롭: 하단 확장 (카메라 각도로 숫자가 셀 하단~다음 행 초입에 위치)
+_COUNT_BOT_EXT  = 0.20   # 수량 크롭: 하단 확장 (카메라 각도로 숫자가 셀 하단~다음 행 초입에 위치)
 
 # ── OCR confidence 임계값 ──────────────────────────────────────────────────────
 _NAME_CONF_THRESH  = 0.1   # 한국어 이름 토큰 최소 confidence
@@ -249,12 +249,47 @@ def _preprocess_binarize(img: np.ndarray, scale: int) -> np.ndarray:
     return cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
 
 
+def _find_digit_blobs(count_col: np.ndarray, bh: int) -> list:
+    """
+    수량 열에서 컨투어로 숫자 블롭 탐지.
+    PaddleOCR det이 얇은 단일 숫자를 놓치는 문제를 우회.
+
+    Returns: [(y_ratio, crop), ...] y_ratio는 bh 기준 y 중심 비율
+    """
+    h, w = count_col.shape[:2]
+    gray = cv2.cvtColor(count_col, cv2.COLOR_BGR2GRAY)
+    binary = cv2.adaptiveThreshold(
+        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 21, 8)
+    kernel = np.ones((2, 2), np.uint8)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+
+    cnts, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    blobs = []
+    for cnt in cnts:
+        x, y, cw, ch = cv2.boundingRect(cnt)
+        area = cv2.contourArea(cnt)
+        # 숫자 크기 조건: 너비는 열 폭의 3~22% (단일 자리 숫자만, 영문 단어 제외)
+        # 높이는 이미지의 2~20%, 종횡비 1.2 이상 (숫자는 세로로 긴 편)
+        aspect = ch / max(cw, 1)
+        if (w * 0.03 < cw < w * 0.22 and
+                h * 0.02 < ch < h * 0.20 and
+                area > 30 and aspect > 1.2):
+            pad = 4
+            crop = count_col[max(0, y - pad):min(h, y + ch + pad),
+                             max(0, x - pad):min(w, x + cw + pad)]
+            y_center = (y + ch / 2) / bh
+            blobs.append((y_center, crop))
+
+    return sorted(blobs, key=lambda b: b[0])
+
+
 # ── 파싱 헬퍼 ─────────────────────────────────────────────────────────────────
 
 def _is_korean_token(tok: str) -> bool:
     """한글 음절이 50% 이상인 토큰만 유효 (같은 줄의 영문 부품명 "(FLANGE NUT)"
-    등이 한국어 OCR 박스로 같이 검출되어 합쳐지면 퍼지 매칭이 깨지므로 배제)."""
-    if len(tok) < 2:
+    등이 한국어 OCR 박스로 같이 검출되어 합쳐지면 퍼지 매칭이 깨지므로 배제).
+    '링', '돔' 등 1글자 한국어도 유효 부품명에 포함되므로 길이 제한 없음."""
+    if not tok:
         return False
     korean = sum(1 for c in tok if '가' <= c <= '힣')
     return korean / len(tok) >= 0.5
@@ -263,12 +298,21 @@ def _is_korean_token(tok: str) -> bool:
 def _extract_count(text: str) -> int:
     """
     OCR 텍스트 → 0~5 정수. 숫자를 찾지 못하면 -1.
-    OCR의 흔한 오인식(O→0, I→1, S→5)을 보정 후 추출.
+    단일 문자 오인식(O→0, l→1 등)은 보정하되,
+    'RING'→'R1NG' 같은 단어 수준 치환은 하지 않아 오검출 방지.
     """
-    t = (text.strip()
-         .replace('O', '0').replace('o', '0')
-         .replace('I', '1').replace('l', '1')
-         .replace('S', '5').replace('s', '5'))
+    t = text.strip()
+    # 순수 숫자
+    if re.match(r'^\d+$', t):
+        return min(_VALID_COUNTS, key=lambda x: abs(x - int(t)))
+    # 단일 문자 오인식 보정 (길이 1~2짜리만 적용)
+    if len(t) <= 2:
+        t = (t.replace('O', '0').replace('o', '0').replace('D', '0')
+              .replace('I', '1').replace('l', '1').replace('i', '1')
+              .replace('S', '5').replace('s', '5').replace('Z', '2'))
+        if re.match(r'^\d+$', t):
+            return min(_VALID_COUNTS, key=lambda x: abs(x - int(t)))
+    # 숫자 문자열 포함 여부 탐색 (단어 중간 오인식 포함)
     m = re.search(r'\d+', t)
     if not m:
         return -1
@@ -341,19 +385,20 @@ def _recog_count(ocr, crop: np.ndarray) -> int:
     crop에 이전 행 숫자가 상단에 블리드될 수 있으므로,
     가장 하단에 위치한 유효 숫자를 채택한다.
     """
-    for scale in (4, 2, 6):
-        proc = _preprocess(crop, scale)
-        candidates = []
-        for box, (text, conf) in ocr_run(ocr, proc):
-            if conf < _COUNT_CONF_THRESH:
-                continue
-            v = _extract_count(text)
-            if v < 0:
-                continue
-            bottom_y = max(pt[1] for pt in box)
-            candidates.append((bottom_y, v))
-        if candidates:
-            return max(candidates, key=lambda x: x[0])[1]
+    for preproc in (_preprocess, _preprocess_binarize):
+        for scale in (4, 2, 6):
+            proc = preproc(crop, scale)
+            candidates = []
+            for box, (text, conf) in ocr_run(ocr, proc):
+                if conf < _COUNT_CONF_THRESH:
+                    continue
+                v = _extract_count(text)
+                if v < 0:
+                    continue
+                bottom_y = max(pt[1] for pt in box)
+                candidates.append((bottom_y, v))
+            if candidates:
+                return max(candidates, key=lambda x: x[0])[1]
     return -1
 
 
@@ -385,21 +430,47 @@ def process_frame_parts(ocr_kor, ocr_or_img, img=None, count_ocr=None) -> dict:
 
     t0 = time.time()
 
-    # YOLO로 모니터 감지 + 정면화 → 실패 시 원본 이미지 사용
+    # YOLO로 모니터 감지 + 정면화 → 실패 시 HSV 폴백
     # out_scale=3: 작은 숫자/한글 디테일 보존 (기본 406x237는 5행 테이블엔 너무 작음)
-    yolo = find_display_yolo(img, out_scale=3)
-    work_img = yolo[0] if yolo is not None else img
-    H, W = work_img.shape[:2]
+    yolo = find_display_yolo(img, conf_thresh=0.35, out_scale=3)
 
-    bbox = find_display_parts(work_img)
-    if not bbox:
-        return {
-            "screen_detected": False,
-            "bbox": None,
-            "col_ratios": None,
-            "parts": [{"name": n, "count": -1} for n in PART_NAMES],
-            "elapsed_ms": round((time.time() - t0) * 1000, 1),
-        }
+    if yolo is not None:
+        warped = yolo[0]
+        # 워프 결과 검증: 모니터 특성(상단 어두운 네이비 + 하단 밝은 콘텐츠) 확인
+        # 파란박스·테이블 등 오감지는 상단이 밝거나 상하 밝기 비율이 작음
+        _h = warped.shape[0]
+        _gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
+        top_mean = float(_gray[:int(_h * 0.20), :].mean())
+        bot_mean = float(_gray[int(_h * 0.40):, :].mean())
+        if top_mean >= 110 or bot_mean <= top_mean * 1.15:
+            yolo = None  # 오감지로 판단 → HSV 폴백
+        else:
+            # YOLO 성공: warp된 이미지에서 lit-bbox로 모니터 영역 확정
+            work_img = warped
+            H, W = work_img.shape[:2]
+            bbox = find_display_parts(work_img)
+            if not bbox:
+                bbox = (0, 0, W, H)
+
+    if yolo is None:
+        # YOLO 실패: 원본 이미지에서 HSV로 모니터 직접 감지
+        work_img = img
+        H, W = work_img.shape[:2]
+        from monitor_ocr_a.ocr_pipeline import find_display_hsv
+        hsv_bbox = find_display_hsv(img)
+        if hsv_bbox:
+            bbox = hsv_bbox
+        else:
+            # HSV도 실패: lit-bbox 마지막 시도
+            bbox = find_display_parts(img)
+        if not bbox:
+            return {
+                "screen_detected": False,
+                "bbox": None,
+                "col_ratios": None,
+                "parts": [{"name": n, "count": -1} for n in PART_NAMES],
+                "elapsed_ms": round((time.time() - t0) * 1000, 1),
+            }
 
     bx, by, bw, bh = bbox
     table_crop      = work_img[by:by+bh, bx:bx+bw]
@@ -491,28 +562,52 @@ def process_frame_parts(ocr_kor, ocr_or_img, img=None, count_ocr=None) -> dict:
         row_gap = 1.0 / (N_ROWS + 3)  # 타이틀+헤더 포함 추정치 (이름 매칭 부족 시)
     match_tol = max(row_gap * 0.6, 0.02)
 
-    # ── 수량 열 전체 OCR (det=True → 박스 y좌표 확보) ────────────────────────
+    # ── 수량 열: 컨투어 블롭 탐지 → 인식 ────────────────────────────────────
+    # PaddleOCR det이 얇은 단일 숫자(1,0 등)를 놓치는 경우가 있어
+    # 컨투어로 숫자 블롭을 먼저 찾고, 각 블롭에 OCR recognition만 적용한다.
     cx1 = max(0, int(bx + count_x[0] * bw))
     cx2 = min(W, int(bx + count_x[1] * bw))
-    # 마지막 행 숫자가 bbox 하단에 걸릴 수 있으므로 아래로 확장
     cy2 = min(H, by + bh + int(bh * _COUNT_BOT_EXT))
     count_col = work_img[by:cy2, cx1:cx2]
 
-    counts_raw: list[tuple[float, int, float]] = []  # (y_ratio, count, conf)
-    for scale in (4, 2, 6):
-        proc = _preprocess(count_col, scale)
-        for box, (text, conf) in ocr_run(count_ocr, proc):
-            if conf < _COUNT_CONF_THRESH:
-                continue
-            v = _extract_count(text)
-            if v < 0:
-                continue
-            y_center = sum(pt[1] for pt in box) / 4 / scale / bh
-            counts_raw.append((y_center, v, conf))
+    counts_raw: list[tuple[float, int, float]] = []
 
-    # y가 가까운 중복 탐지는 confidence가 가장 높은 것만 채택
+    # 1순위: 컨투어 블롭 기반
+    blobs = _find_digit_blobs(count_col, bh)
+    for y_c, blob_crop in blobs:
+        best_v, best_conf = -1, 0.0
+        for preproc in (_preprocess, _preprocess_binarize):
+            for scale in (6, 4, 8):
+                proc = preproc(blob_crop, scale)
+                for text, conf in ocr_recog_only(count_ocr, proc):
+                    if conf < _COUNT_CONF_THRESH:
+                        continue
+                    v = _extract_count(text)
+                    if v >= 0 and conf > best_conf:
+                        best_v, best_conf = v, conf
+            if best_v >= 0:
+                break
+        if best_v >= 0:
+            counts_raw.append((y_c, best_v, best_conf))
+
+    # 2순위: det=True 전체 스캔 (컨투어로 못 찾은 경우 보완)
+    if len(counts_raw) < len(names_y):
+        for preproc in (_preprocess, _preprocess_binarize):
+            for scale in (4, 2, 6):
+                proc = preproc(count_col, scale)
+                for box, (text, conf) in ocr_run(count_ocr, proc):
+                    if conf < _COUNT_CONF_THRESH:
+                        continue
+                    v = _extract_count(text)
+                    if v < 0:
+                        continue
+                    y_center = sum(pt[1] for pt in box) / 4 / scale / bh
+                    counts_raw.append((y_center, v, conf))
+            if len(counts_raw) >= len(names_y):
+                break
+
     counts_raw.sort(key=lambda c: c[0])
-    counts_y: list[tuple[float, int]] = []  # (y_ratio, count)
+    counts_y: list[tuple[float, int]] = []
     cluster: list[tuple[float, int, float]] = []
     for c in counts_raw:
         if cluster and c[0] - cluster[-1][0] > match_tol:
@@ -524,76 +619,46 @@ def process_frame_parts(ocr_kor, ocr_or_img, img=None, count_ocr=None) -> dict:
         best = max(cluster, key=lambda e: e[2])
         counts_y.append((best[0], best[1]))
 
-    # ── 이름 행 순서와 수량 행 순서를 단조 정렬(monotonic alignment)으로 매칭 ──
-    # 두 열은 같은 물리적 행을 위에서 아래로 순서대로 나열하므로, 단순 최근접
-    # 거리 매칭은 (a) 숫자/한글 글리프의 폰트 메트릭 차이로 같은 행이어도 y중심이
-    # 살짝 어긋나는 계통 오차와 (b) 헤더/영문 부품명 잔여 텍스트의 오검출 때문에
-    # 인접 행끼리 서로 자리를 "훔치는" 연쇄 오류가 났다.
-    #
-    # 먼저 이름 행 범위(첫~끝 행 ± 반 행) 밖의 수량 검출은 타이틀/헤더 잡음으로
-    # 보고 제거한다. 그 결과 개수가 이름 행 개수와 정확히 같으면 — 둘 다 같은
-    # 물리적 행을 위→아래 순서로 나열한 것이므로 — 절대 좌표 거리 없이 순서대로
-    # 그대로 1:1 대응시킨다 (계통 오차에 전혀 영향받지 않는 가장 안전한 경우).
-    # 개수가 다를 때만(누락·잔여 잡음) 거리 기반 단조 정렬 DP로 최선의 결합을
-    # 찾는다 — 매칭 개수를 최대화한 뒤 누적 거리를 최소화하는 부분 매칭.
     if names_y:
-        lo = names_y[0][0] - row_gap * 0.5
-        hi = names_y[-1][0] + row_gap * 0.5
+        lo = names_y[0][0] - row_gap
+        hi = names_y[-1][0] + row_gap + _COUNT_BOT_EXT
         counts_y = [(y, v) for y, v in counts_y if lo <= y <= hi]
 
-    if len(counts_y) == len(names_y):
-        name_to_count: dict[str, int] = {
-            name: v for (_, name, _ratio), (_, v) in zip(names_y, counts_y)
-        }
-        for part in PART_NAMES:
-            name_to_count.setdefault(part, -1)
-        return {
-            "screen_detected": True,
-            "bbox": [bx, by, bw, bh],
-            "col_ratios": {"name_x": list(name_x), "count_x": list(count_x)},
-            "parts": [{"name": n, "count": name_to_count[n]} for n in PART_NAMES],
-            "elapsed_ms": round((time.time() - t0) * 1000, 1),
-        }
-
+    # 이름↔수량 단조 정렬 DP 매칭
     n, m = len(names_y), len(counts_y)
-    max_dist = row_gap * 0.8
-    # dp[i][j] = (i번째까지의 이름, j번째까지의 수량을 썼을 때) 최대 매칭 수,
-    # 그 중 최소 누적 거리. back[i][j]에 선택한 전이를 기록해 역추적한다.
-    dp = [[(0, 0.0) for _ in range(m + 1)] for _ in range(n + 1)]
-    back = [[None] * (m + 1) for _ in range(n + 1)]
-    for i in range(1, n + 1):
-        dp[i][0] = dp[i - 1][0]
-        back[i][0] = "skip_name"
-    for j in range(1, m + 1):
-        dp[0][j] = dp[0][j - 1]
-        back[0][j] = "skip_count"
-    for i in range(1, n + 1):
+    if n > 0 and m > 0:
+        max_dist = row_gap * 1.2
+        dp   = [[(0, 0.0)] * (m + 1) for _ in range(n + 1)]
+        back = [[None]     * (m + 1) for _ in range(n + 1)]
+        for i in range(1, n + 1):
+            dp[i][0]   = dp[i - 1][0];  back[i][0]   = "skip_name"
         for j in range(1, m + 1):
-            best = (dp[i - 1][j][0], -dp[i - 1][j][1])  # skip name (maximize: matches, -cost)
-            choice = "skip_name"
-            cand = (dp[i][j - 1][0], -dp[i][j - 1][1])
-            if cand > best:
-                best, choice = cand, "skip_count"
-            dist = abs(names_y[i - 1][0] - counts_y[j - 1][0])
-            if dist <= max_dist:
-                pm, pc = dp[i - 1][j - 1]
-                cand = (pm + 1, -(pc + dist))
-                if cand > best:
-                    best, choice = cand, "match"
-            dp[i][j] = (best[0], -best[1])
-            back[i][j] = choice
+            dp[0][j]   = dp[0][j - 1];  back[0][j]   = "skip_count"
+        for i in range(1, n + 1):
+            for j in range(1, m + 1):
+                best, choice = (dp[i-1][j][0], -dp[i-1][j][1]), "skip_name"
+                cand = (dp[i][j-1][0], -dp[i][j-1][1])
+                if cand > best: best, choice = cand, "skip_count"
+                dist = abs(names_y[i-1][0] - counts_y[j-1][0])
+                if dist <= max_dist:
+                    pm, pc = dp[i-1][j-1]
+                    cand = (pm + 1, -(pc + dist))
+                    if cand > best: best, choice = cand, "match"
+                dp[i][j] = (best[0], -best[1]);  back[i][j] = choice
 
-    name_to_count: dict[str, int] = {}
-    i, j = n, m
-    while i > 0 or j > 0:
-        choice = back[i][j]
-        if choice == "match":
-            name_to_count[names_y[i - 1][1]] = counts_y[j - 1][1]
-            i, j = i - 1, j - 1
-        elif choice == "skip_name":
-            i -= 1
-        else:
-            j -= 1
+        name_to_count: dict[str, int] = {}
+        i, j = n, m
+        while i > 0 or j > 0:
+            choice = back[i][j]
+            if choice == "match":
+                name_to_count[names_y[i-1][1]] = counts_y[j-1][1]
+                i -= 1;  j -= 1
+            elif choice == "skip_name":
+                i -= 1
+            else:
+                j -= 1
+    else:
+        name_to_count = {}
 
     # 미인식 부품 → -1
     for part in PART_NAMES:
