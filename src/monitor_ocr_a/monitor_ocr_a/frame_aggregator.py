@@ -9,6 +9,8 @@ FrameAggregator: 여러 프레임 OCR 결과를 합쳐 더 신뢰할 수 있는 
 """
 from collections import Counter
 
+from monitor_ocr_a.parts_constants import N_ROWS, PART_NAMES
+
 
 class FrameAggregator:
     def __init__(self, window: int = 10, btn_window: int = 3):
@@ -158,14 +160,30 @@ class FrameAggregatorParts:
     이름은 행 순서 기반 PART_NAMES 고정값 사용.
     """
 
-    def __init__(self, window: int = 10):
-        self.window   = window
+    def __init__(self, window: int = 10, preserve_empty_counts: bool = False):
+        self.window = window
+        self.preserve_empty_counts = preserve_empty_counts
         self._history = []
 
     def update(self, result: dict) -> dict:
-        # 화면은 감지됐더라도 OCR로 읽힌 수량이 하나도 없으면 미감지로 처리
+        if result.get("parts"):
+            counts_recognized = any(p["count"] >= 0 for p in result["parts"])
+            all_counts_recognized = all(p["count"] >= 0 for p in result["parts"])
+            all_parts_recognized = bool(result.get("all_parts_recognized", True))
+            result = dict(
+                result,
+                counts_recognized=counts_recognized,
+                all_counts_recognized=(
+                    bool(result.get("screen_detected"))
+                    and all_counts_recognized
+                    and all_parts_recognized),
+            )
+
+        # 기존 동작 유지: 일반 모드에서는 all -1 프레임을 미감지로 처리한다.
+        # 디버그 모드에서는 bbox/content 검출 실패와 count OCR 실패를 분리해서 보여준다.
         if result.get("screen_detected") and result.get("parts"):
-            if all(p["count"] < 0 for p in result["parts"]):
+            if (not self.preserve_empty_counts
+                    and all(p["count"] < 0 for p in result["parts"])):
                 result = dict(result, screen_detected=False)
 
         self._history.append(result)
@@ -173,9 +191,20 @@ class FrameAggregatorParts:
             self._history.pop(0)
         return self._aggregate()
 
-    def _aggregate(self) -> dict:
-        from monitor_ocr_a.ocr_pipeline_parts import PART_NAMES, N_ROWS
+    def _latest_debug_fields(self, latest: dict) -> dict:
+        return {
+            "reader_backend":       latest.get("reader_backend", "ocr"),
+            "all_parts_recognized": latest.get("all_parts_recognized", True),
+            "debug":                latest.get("debug"),
+            "debug_bboxes":         latest.get("debug_bboxes"),
+            "debug_counts_raw":     latest.get("debug_counts_raw"),
+            "debug_names_y":        latest.get("debug_names_y"),
+            "debug_count_col_candidates": latest.get("debug_count_col_candidates"),
+            "debug_mode":           latest.get("debug_mode"),
+            "row_index_fallback":   latest.get("row_index_fallback", False),
+        }
 
+    def _aggregate(self) -> dict:
         hist   = self._history
         latest = hist[-1]
 
@@ -186,6 +215,9 @@ class FrameAggregatorParts:
                 "parts":                  [{"name": PART_NAMES[i], "count": -1} for i in range(N_ROWS)],
                 "latest_elapsed_ms":      latest.get("elapsed_ms"),
                 "latest_screen_detected": False,
+                "counts_recognized":      False,
+                "all_counts_recognized":  False,
+                **self._latest_debug_fields(latest),
             }
 
         # 화면 감지된 경우: 유효값의 다수결
@@ -201,11 +233,19 @@ class FrameAggregatorParts:
             count = Counter(counts).most_common(1)[0][0] if counts else -1
             parts.append({"name": PART_NAMES[i], "count": count})
 
+        counts_recognized = any(p["count"] >= 0 for p in parts)
+        all_counts_recognized = (
+            all(p["count"] >= 0 for p in parts)
+            and bool(latest.get("all_parts_recognized", True)))
+
         return {
             "frames_used":            len(hist),
             "parts":                  parts,
             "latest_elapsed_ms":      latest.get("elapsed_ms"),
             "latest_screen_detected": True,
+            "counts_recognized":      counts_recognized,
+            "all_counts_recognized":  all_counts_recognized,
+            **self._latest_debug_fields(latest),
         }
 
     def reset(self):

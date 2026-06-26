@@ -17,22 +17,26 @@ Parameters:
   ocr_mode         (str,   default='korean_only')  parts_mode: korean_only | dual
 """
 import json
+import os
+import ast
 import threading
 import time
 
+import cv2
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import Image
 from std_msgs.msg import Bool, Int32MultiArray, String
 from cv_bridge import CvBridge
-from monitor_ocr_a.paddle_compat import make_ocr
 
 from monitor_ocr_a.ocr_pipeline import process_frame, init_yolo
 from monitor_ocr_a.ocr_pipeline_hq import process_frame_hq
-from monitor_ocr_a.ocr_pipeline_parts import process_frame_parts, PART_NAMES
-from monitor_ocr_a.ocr_pipeline_sequence import process_frame_sequence, PEG_COUNT
 from monitor_ocr_a.frame_aggregator import FrameAggregator, FrameAggregatorParts, FrameAggregatorSequence
+from monitor_ocr_a.parts_constants import PART_NAMES
+
+
+PEG_COUNT = 4
 
 
 class MonitorOCRNode(Node):
@@ -47,6 +51,17 @@ class MonitorOCRNode(Node):
         self.declare_parameter('parts_mode',       False)
         self.declare_parameter('sequence_mode',    False)
         self.declare_parameter('ocr_mode',         'korean_only')
+        self.declare_parameter('parts_reader_backend', 'ocr')
+        self.declare_parameter('debug_images',     False)
+        self.declare_parameter('debug_save_dir',   '')
+        self.declare_parameter('debug_view',       'mosaic')
+        self.declare_parameter('debug_save_every_n', 10)
+        self.declare_parameter('icon_match_threshold', 0.45)
+        self.declare_parameter('digit_match_threshold', 0.45)
+        self.declare_parameter('allow_row_order_fallback', True)
+        self.declare_parameter(
+            'quantity_x_candidates',
+            '[[0.74, 0.99], [0.76, 0.99], [0.78, 0.99], [0.80, 0.995]]')
 
         image_topic           = self.get_parameter('image_topic').value
         self.process_interval = self.get_parameter('process_interval').value
@@ -54,6 +69,38 @@ class MonitorOCRNode(Node):
         self._parts_mode      = self.get_parameter('parts_mode').value
         self._sequence_mode   = self.get_parameter('sequence_mode').value
         self._ocr_mode        = str(self.get_parameter('ocr_mode').value).strip().lower()
+        self._parts_reader_backend = str(
+            self.get_parameter('parts_reader_backend').value).strip().lower()
+        if self._parts_reader_backend not in ('ocr', 'template_icon_digit'):
+            self.get_logger().warn(
+                f"알 수 없는 parts_reader_backend='{self._parts_reader_backend}', ocr로 대체합니다")
+            self._parts_reader_backend = 'ocr'
+        self._debug_images_enabled = (
+            bool(self.get_parameter('debug_images').value) and self._parts_mode)
+        self._debug_save_dir = str(self.get_parameter('debug_save_dir').value).strip()
+        self._debug_view = str(self.get_parameter('debug_view').value).strip() or 'mosaic'
+        try:
+            self._debug_save_every_n = max(
+                1, int(self.get_parameter('debug_save_every_n').value))
+        except Exception:
+            self._debug_save_every_n = 10
+        try:
+            self._icon_match_threshold = float(
+                self.get_parameter('icon_match_threshold').value)
+        except Exception:
+            self._icon_match_threshold = 0.45
+        try:
+            self._digit_match_threshold = float(
+                self.get_parameter('digit_match_threshold').value)
+        except Exception:
+            self._digit_match_threshold = 0.45
+        self._allow_row_order_fallback = bool(
+            self.get_parameter('allow_row_order_fallback').value)
+        self._quantity_x_candidates = self._parse_quantity_x_candidates(
+            self.get_parameter('quantity_x_candidates').value)
+        self._debug_frame_id = 0
+        if self._debug_images_enabled and self._debug_save_dir:
+            os.makedirs(self._debug_save_dir, exist_ok=True)
         if self._ocr_mode not in ('korean_only', 'dual'):
             self.get_logger().warn(
                 f"알 수 없는 ocr_mode='{self._ocr_mode}', korean_only로 대체합니다")
@@ -65,7 +112,6 @@ class MonitorOCRNode(Node):
             self._effective_ocr_mode = 'dual'
 
         # YOLO 모니터 감지 모델 초기화
-        import os
         try:
             from ament_index_python.packages import get_package_share_directory
             _default_model = os.path.join(
@@ -82,26 +128,43 @@ class MonitorOCRNode(Node):
         except Exception as e:
             self.get_logger().warn(f'YOLO 로드 실패 (HSV 폴백 사용): {e}')
 
-        # PaddleOCR 초기화 (시간이 걸리므로 먼저 로그)
-        self.get_logger().info('PaddleOCR 초기화 중...')
-        self.get_logger().info(f'OCR mode: {self._effective_ocr_mode}')
-        self.ocr_kor = make_ocr('korean', det_thresh=0.1,  det_box_thresh=0.2,  det_unclip=2.5)
-        # parts_mode는 이름 인식에 영어 OCR을 항상 사용 (한국어 OCR보다 정확)
-        if self._parts_mode or self._effective_ocr_mode == 'dual':
-            self.ocr_en = make_ocr('en', det_thresh=0.08, det_box_thresh=0.15, det_unclip=3.0)
+        self.ocr_kor = None
+        self.ocr_en = None
+        self._parts_count_ocr = None
+        self._needs_ocr = not (
+            self._parts_mode and self._parts_reader_backend == 'template_icon_digit')
+        if self._needs_ocr:
+            from monitor_ocr_a.paddle_compat import make_ocr
+
+            # PaddleOCR 초기화 (시간이 걸리므로 먼저 로그)
+            self.get_logger().info('PaddleOCR 초기화 중...')
+            self.get_logger().info(f'OCR mode: {self._effective_ocr_mode}')
+            self.ocr_kor = make_ocr(
+                'korean', det_thresh=0.1, det_box_thresh=0.2, det_unclip=2.5)
+            self._parts_count_ocr = self.ocr_kor
+            if self._effective_ocr_mode == 'dual':
+                self.ocr_en = make_ocr(
+                    'en', det_thresh=0.08, det_box_thresh=0.15, det_unclip=3.0)
+                if self._parts_mode:
+                    self._parts_count_ocr = self.ocr_en
+            if self._parts_mode and self._effective_ocr_mode == 'korean_only':
+                self.get_logger().info(
+                    'PARTS mode: using Korean OCR for both part names and counts')
+            elif self._parts_mode:
+                self.get_logger().info(
+                    'PARTS mode: using Korean OCR for part names and English OCR for counts')
+            self.get_logger().info(f'PaddleOCR 초기화 완료 - {self._effective_ocr_mode}')
         else:
-            self.ocr_en = None
-        self._parts_count_ocr = self.ocr_kor
-        if self._parts_mode:
             self.get_logger().info(
-                'PARTS mode: English OCR for part names, Korean OCR for counts')
-        elif self._effective_ocr_mode == 'dual':
-            self.get_logger().info('dual OCR mode')
-        self.get_logger().info(f'PaddleOCR 초기화 완료 - {self._effective_ocr_mode}')
+                'PARTS mode: template_icon_digit backend; PaddleOCR import/init skipped')
 
         self.bridge      = CvBridge()
         if self._parts_mode:
-            self._aggregator = FrameAggregatorParts(window=10)
+            self._aggregator = FrameAggregatorParts(
+                window=10,
+                preserve_empty_counts=(
+                    self._debug_images_enabled
+                    or self._parts_reader_backend == 'template_icon_digit'))
         elif self._sequence_mode:
             self._aggregator = FrameAggregatorSequence(window=10, peg_count=PEG_COUNT)
         else:
@@ -110,6 +173,7 @@ class MonitorOCRNode(Node):
         self._pending_img    = None
         self._processing     = False
         self._last_proc_time = 0.0
+        self._template_reader_warnings_logged = set()
 
         # Publishers (공통)
         self.pub_result = self.create_publisher(String,          '/monitor_ocr/result',         10)
@@ -120,6 +184,28 @@ class MonitorOCRNode(Node):
             self.pub_part_counts = self.create_publisher(Int32MultiArray, '/monitor_ocr/part_counts',  10)
             # 인식 완료 신호: 화면 감지 + 모든 수량 유효할 때 True
             self.pub_recognized  = self.create_publisher(Bool,            '/monitor_ocr/recognized',   10)
+            self.pub_debug_images = {}
+            if self._debug_images_enabled:
+                self.pub_debug_images = {
+                    'bbox_overlay': self.create_publisher(
+                        Image, '/monitor_ocr/debug/bbox_overlay', 10),
+                    'table_crop': self.create_publisher(
+                        Image, '/monitor_ocr/debug/table_crop', 10),
+                    'name_col': self.create_publisher(
+                        Image, '/monitor_ocr/debug/name_col', 10),
+                    'count_col': self.create_publisher(
+                        Image, '/monitor_ocr/debug/count_col', 10),
+                    'icon_crops': self.create_publisher(
+                        Image, '/monitor_ocr/debug/icon_crops', 10),
+                    'digit_crops': self.create_publisher(
+                        Image, '/monitor_ocr/debug/digit_crops', 10),
+                    'digit_blobs': self.create_publisher(
+                        Image, '/monitor_ocr/debug/digit_blobs', 10),
+                    'mosaic': self.create_publisher(
+                        Image, '/monitor_ocr/debug/mosaic', 10),
+                    'selected': self.create_publisher(
+                        Image, '/monitor_ocr/debug/selected', 10),
+                }
         elif self._sequence_mode:
             # 부품 순서 모드 전용 토픽
             self.pub_sequence       = self.create_publisher(String,          '/monitor_ocr/sequence',       10)
@@ -147,10 +233,37 @@ class MonitorOCRNode(Node):
         self.get_logger().info(f'OCR 주기: {self.process_interval}s')
         if self._parts_mode:
             self.get_logger().info('모드: PARTS (부품 수량 테이블)')
+            self.get_logger().info(f'PARTS reader backend: {self._parts_reader_backend}')
+            if self._debug_images_enabled:
+                save_msg = (
+                    f", save_dir={self._debug_save_dir}, every={self._debug_save_every_n}"
+                    if self._debug_save_dir else "")
+                self.get_logger().info(
+                    f'PARTS debug images enabled view={self._debug_view}{save_msg}')
         elif self._sequence_mode:
             self.get_logger().info('모드: SEQUENCE (부품 순차 조립 지령)')
         else:
             self.get_logger().info(f'모드: {"HQ (고화질)" if self._hq_mode else "LQ (저화질 전처리)"}')
+
+    def _parse_quantity_x_candidates(self, raw):
+        try:
+            if isinstance(raw, str):
+                parsed = ast.literal_eval(raw)
+            else:
+                parsed = raw
+            candidates = []
+            for item in parsed:
+                if not isinstance(item, (list, tuple)) or len(item) != 2:
+                    continue
+                x1, x2 = float(item[0]), float(item[1])
+                if 0.0 <= x1 < x2 <= 1.05 and x2 - x1 >= 0.04:
+                    candidates.append((x1, min(1.0, x2)))
+            if candidates:
+                return candidates
+        except Exception as e:
+            self.get_logger().warn(
+                f'quantity_x_candidates 파싱 실패, 기본값 사용: {e}')
+        return [(0.74, 0.99), (0.76, 0.99), (0.78, 0.99), (0.80, 0.995)]
 
     # ── 콜백 ─────────────────────────────────────────────────────────────────
 
@@ -191,11 +304,33 @@ class MonitorOCRNode(Node):
                 self._last_proc_time = time.time()
                 try:
                     if self._parts_mode:
-                        raw = process_frame_parts(
-                            self.ocr_kor, img,
-                            count_ocr=self._parts_count_ocr,
-                            name_ocr=self.ocr_en)
+                        if self._parts_reader_backend == 'template_icon_digit':
+                            from monitor_ocr_a.a_command_template_reader import (
+                                process_frame_template_icon_digit,
+                            )
+                            raw = process_frame_template_icon_digit(
+                                img,
+                                icon_match_threshold=self._icon_match_threshold,
+                                digit_match_threshold=self._digit_match_threshold,
+                                allow_row_order_fallback=self._allow_row_order_fallback,
+                                quantity_x_candidates=self._quantity_x_candidates,
+                                debug_images=self._debug_images_enabled,
+                                debug_view=self._debug_view)
+                        else:
+                            from monitor_ocr_a.ocr_pipeline_parts import process_frame_parts
+                            raw = process_frame_parts(
+                                self.ocr_kor, img, count_ocr=self._parts_count_ocr,
+                                debug_images=self._debug_images_enabled)
+                        debug_images = raw.pop('_debug_images', None)
+                        if self._parts_reader_backend == 'template_icon_digit':
+                            for warning in (raw.get('debug') or {}).get('warnings', []):
+                                if warning not in self._template_reader_warnings_logged:
+                                    self.get_logger().warn(warning)
+                                    self._template_reader_warnings_logged.add(warning)
+                        if debug_images:
+                            self._publish_debug_images(debug_images)
                     elif self._sequence_mode:
+                        from monitor_ocr_a.ocr_pipeline_sequence import process_frame_sequence
                         raw = process_frame_sequence(self.ocr_kor, self.ocr_en, img)
                     elif self._hq_mode:
                         raw = process_frame_hq(self.ocr_kor, self.ocr_en, img)
@@ -206,9 +341,25 @@ class MonitorOCRNode(Node):
                     if self._parts_mode:
                         parts_log = "  ".join(
                             f"{p['name']}:{p['count']}" for p in result['parts'])
+                        debug_bboxes = raw.get('debug_bboxes') or {}
+                        digit_blobs = len(debug_bboxes.get('digit_blob_bboxes') or [])
+                        accepted_names = sum(
+                            1 for n in raw.get('debug_names_y', [])
+                            if n.get('accepted'))
+                        counts_raw = [
+                            (c.get('value'), c.get('y'), c.get('confidence'))
+                            for c in raw.get('debug_counts_raw', [])
+                            if c.get('value', -1) >= 0
+                        ]
                         self.get_logger().info(
                             f"[부품] {parts_log}  {raw['elapsed_ms']}ms"
-                            f"  ({result['frames_used']}프레임 집계)")
+                            f"  ({result['frames_used']}프레임 집계)"
+                            f"  backend={raw.get('reader_backend', 'ocr')}"
+                            f"  debug_mode={raw.get('debug_mode')}"
+                            f"  row_index_fallback={raw.get('row_index_fallback', False)}"
+                            f"  names={accepted_names}"
+                            f"  digit_blobs={digit_blobs}"
+                            f"  counts_raw={counts_raw[:8]}")
                     elif self._sequence_mode:
                         seq_log = " → ".join(n or "?" for n in result['sequence'])
                         self.get_logger().info(
@@ -227,6 +378,31 @@ class MonitorOCRNode(Node):
                     self._processing = False
             else:
                 time.sleep(0.05)
+
+    def _publish_debug_images(self, images: dict):
+        if not self._debug_images_enabled:
+            return
+
+        self._debug_frame_id += 1
+        should_save = (
+            bool(self._debug_save_dir)
+            and self._debug_frame_id % self._debug_save_every_n == 0
+        )
+
+        for name, img in images.items():
+            if img is None or getattr(img, 'size', 0) == 0:
+                continue
+
+            pub = self.pub_debug_images.get(name)
+            if pub is not None:
+                encoding = 'mono8' if len(img.shape) == 2 else 'bgr8'
+                pub.publish(self.bridge.cv2_to_imgmsg(img, encoding=encoding))
+
+            if should_save:
+                path = os.path.join(
+                    self._debug_save_dir,
+                    f'frame_{self._debug_frame_id:06d}_{name}.png')
+                cv2.imwrite(path, img)
 
     # ── 토픽 발행 ────────────────────────────────────────────────────────────
 
@@ -250,7 +426,9 @@ class MonitorOCRNode(Node):
             # 인식 완료: 화면 감지 + 모든 수량이 유효(-1 없음)
             recognized = (
                 r.get('latest_screen_detected', False)
-                and all(p['count'] >= 0 for p in r['parts'])
+                and r.get('all_counts_recognized',
+                          all(p['count'] >= 0 for p in r['parts']))
+                and r.get('all_parts_recognized', True)
             )
             msg_recog = Bool()
             msg_recog.data = recognized

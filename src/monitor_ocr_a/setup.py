@@ -13,6 +13,8 @@ setup(
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name, ['best.pt']),
         ('share/' + package_name + '/launch', glob('launch/*.py')),
+        ('share/' + package_name + '/templates/icons', glob('templates/icons/*')),
+        ('share/' + package_name + '/templates/digits', glob('templates/digits/*')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,

@@ -13,7 +13,7 @@ from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
 
 
-DEFAULT_TOPIC = "/perception/wrist/target_debug_image"
+DEFAULT_TOPIC = "/monitor_ocr/debug/bbox_overlay"
 
 
 class ZedRgbImageSaver(Node):

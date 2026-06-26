@@ -13,11 +13,19 @@
 #      parts    : 부품 수량 테이블 모드
 #      sequence : 부품 순차 조립 지령 모드 (Peg1~4 순서 인식)
 #      mission  : 기존 미션 형식 (포인트/버튼/제목)
+#    OCR_ENGINE_MODE=dual  (parts 수량 인식 안정화를 위해 기본 dual)
+#    DEBUG_IMAGES=false
+#    DEBUG_SAVE_DIR=
+#    DEBUG_SAVE_EVERY_N=10
 # ══════════════════════════════════════════════════════════════════════════════
 
 IMAGE_TOPIC="${IMAGE_TOPIC:-/zed/zed_node/left/image_rect_color}"
 INTERVAL="${INTERVAL:-2.0}"
 OCR_MODE="${OCR_MODE:-parts}"
+OCR_ENGINE_MODE="${OCR_ENGINE_MODE:-dual}"
+DEBUG_IMAGES="${DEBUG_IMAGES:-false}"
+DEBUG_SAVE_DIR="${DEBUG_SAVE_DIR:-}"
+DEBUG_SAVE_EVERY_N="${DEBUG_SAVE_EVERY_N:-10}"
 MODE="${1:-local}"
 
 case "$OCR_MODE" in
@@ -32,6 +40,8 @@ echo "  Monitor OCR 노드 시작 (OCR_MODE=$OCR_MODE)"
 echo "  모드  : $MODE"
 echo "  토픽  : $IMAGE_TOPIC"
 echo "  주기  : ${INTERVAL}s"
+echo "  OCR   : $OCR_ENGINE_MODE"
+echo "  Debug : $DEBUG_IMAGES"
 echo "══════════════════════════════════════════"
 echo ""
 
@@ -59,7 +69,11 @@ if [ "$MODE" = "docker" ]; then
         ros2 run monitor_ocr_a monitor_ocr_a_node --ros-args \
             $MODE_ARG \
             -p image_topic:=$IMAGE_TOPIC \
-            -p process_interval:=$INTERVAL
+            -p process_interval:=$INTERVAL \
+            -p ocr_mode:=$OCR_ENGINE_MODE \
+            -p debug_images:=$DEBUG_IMAGES \
+            -p debug_save_dir:=$DEBUG_SAVE_DIR \
+            -p debug_save_every_n:=$DEBUG_SAVE_EVERY_N
     "
 else
     # 로컬 직접 실행
@@ -80,5 +94,9 @@ else
     $NODE --ros-args \
         $MODE_ARG \
         -p image_topic:=$IMAGE_TOPIC \
-        -p process_interval:=$INTERVAL
+        -p process_interval:=$INTERVAL \
+        -p ocr_mode:=$OCR_ENGINE_MODE \
+        -p debug_images:=$DEBUG_IMAGES \
+        -p debug_save_dir:=$DEBUG_SAVE_DIR \
+        -p debug_save_every_n:=$DEBUG_SAVE_EVERY_N
 fi

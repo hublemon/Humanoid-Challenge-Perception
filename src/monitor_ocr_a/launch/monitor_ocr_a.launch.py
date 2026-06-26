@@ -12,6 +12,15 @@ def generate_launch_description():
     parts_mode = LaunchConfiguration('parts_mode')
     sequence_mode = LaunchConfiguration('sequence_mode')
     ocr_mode = LaunchConfiguration('ocr_mode')
+    parts_reader_backend = LaunchConfiguration('parts_reader_backend')
+    debug_images = LaunchConfiguration('debug_images')
+    debug_save_dir = LaunchConfiguration('debug_save_dir')
+    debug_view = LaunchConfiguration('debug_view')
+    debug_save_every_n = LaunchConfiguration('debug_save_every_n')
+    icon_match_threshold = LaunchConfiguration('icon_match_threshold')
+    digit_match_threshold = LaunchConfiguration('digit_match_threshold')
+    allow_row_order_fallback = LaunchConfiguration('allow_row_order_fallback')
+    quantity_x_candidates = LaunchConfiguration('quantity_x_candidates')
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -36,7 +45,43 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'ocr_mode',
-            default_value='korean_only',
+            default_value='dual',
+        ),
+        DeclareLaunchArgument(
+            'parts_reader_backend',
+            default_value='ocr',
+        ),
+        DeclareLaunchArgument(
+            'debug_images',
+            default_value='false',
+        ),
+        DeclareLaunchArgument(
+            'debug_save_dir',
+            default_value='',
+        ),
+        DeclareLaunchArgument(
+            'debug_view',
+            default_value='mosaic',
+        ),
+        DeclareLaunchArgument(
+            'debug_save_every_n',
+            default_value='10',
+        ),
+        DeclareLaunchArgument(
+            'icon_match_threshold',
+            default_value='0.45',
+        ),
+        DeclareLaunchArgument(
+            'digit_match_threshold',
+            default_value='0.45',
+        ),
+        DeclareLaunchArgument(
+            'allow_row_order_fallback',
+            default_value='true',
+        ),
+        DeclareLaunchArgument(
+            'quantity_x_candidates',
+            default_value='[[0.74, 0.99], [0.76, 0.99], [0.78, 0.99], [0.80, 0.995]]',
         ),
         Node(
             package='monitor_ocr_a',
@@ -50,6 +95,15 @@ def generate_launch_description():
                 'parts_mode': ParameterValue(parts_mode, value_type=bool),
                 'sequence_mode': ParameterValue(sequence_mode, value_type=bool),
                 'ocr_mode': ParameterValue(ocr_mode, value_type=str),
+                'parts_reader_backend': ParameterValue(parts_reader_backend, value_type=str),
+                'debug_images': ParameterValue(debug_images, value_type=bool),
+                'debug_save_dir': ParameterValue(debug_save_dir, value_type=str),
+                'debug_view': ParameterValue(debug_view, value_type=str),
+                'debug_save_every_n': ParameterValue(debug_save_every_n, value_type=int),
+                'icon_match_threshold': ParameterValue(icon_match_threshold, value_type=float),
+                'digit_match_threshold': ParameterValue(digit_match_threshold, value_type=float),
+                'allow_row_order_fallback': ParameterValue(allow_row_order_fallback, value_type=bool),
+                'quantity_x_candidates': ParameterValue(quantity_x_candidates, value_type=str),
             }],
         ),
     ])

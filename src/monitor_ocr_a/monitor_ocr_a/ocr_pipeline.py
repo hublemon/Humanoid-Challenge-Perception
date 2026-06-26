@@ -107,7 +107,7 @@ def _mask_to_quad(mask_xy):
     return _sort_quad_corners(box)
 
 
-def find_display_yolo(img, conf_thresh=0.50, out_scale=1):
+def find_display_yolo(img, conf_thresh=0.35, out_scale=1):
     """YOLO-seg로 모니터 감지 후 정면화(perspective warp).
     conf_thresh: 이 값 미만이면 None 반환 → HSV 폴백
     out_scale:   출력 warp 해상도 배율 (기본 406x237). 작은 글자/숫자를 다루는
@@ -160,7 +160,7 @@ def find_display_hsv(img):
     hsv    = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     h_img  = img.shape[0]
     dark   = cv2.inRange(hsv, (0, 0, 0), (180, 255, 70))
-    dark[h_img // 2:, :] = 0
+    dark[int(h_img * 0.65):, :] = 0
     k      = np.ones((10, 10), np.uint8)
     dark   = cv2.morphologyEx(dark, cv2.MORPH_CLOSE, k)
     dark   = cv2.morphologyEx(dark, cv2.MORPH_OPEN,  k)
