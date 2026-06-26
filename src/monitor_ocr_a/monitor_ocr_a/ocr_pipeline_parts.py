@@ -27,12 +27,21 @@ from monitor_ocr_a.paddle_compat import ocr_recog_only, ocr_run
 PART_NAMES = ["플랜지 너트", "기어 링", "스페이서 링", "육각 너트", "돔 너트"]
 N_ROWS = len(PART_NAMES)
 
+PART_NAMES_EN = ["FLANGE NUT", "GEAR RING", "SPACER RING", "HEX NUT", "DOME NUT"]
+_EN_TO_KO = {
+    "FLANGE NUT":  "플랜지 너트",
+    "GEAR RING":   "기어 링",
+    "SPACER RING": "스페이서 링",
+    "HEX NUT":     "육각 너트",
+    "DOME NUT":    "돔 너트",
+}
+
 # ── 열 x 비율 폴백값 (bbox 기준, 시나리오A "부품 선별 지령" 양식 실측 캘리브레이션) ──
 # 이 양식은 열 구분 세로선이 없어 Hough 감지가 항상 실패 → 폴백값이 실질적 기본값.
 _NAME_X  = (0.22, 0.87)
-_COUNT_X = (0.72, 0.995)
-# 카메라 각도에 따라 perspective warp 후에도 잔여 shear(행이 내려갈수록 좌측으로
-# 드리프트)가 남아 좁은 열 폭으로는 하단 행 숫자가 잘림 → 폭을 넉넉히 잡는다.
+_COUNT_X = (0.72, 0.999)
+# shear: 카메라 각도로 인해 하단 행 수량이 좌측으로 드리프트 → 넓게 유지.
+# 이름 텍스트가 crop에 섞이지만 _extract_count가 숫자만 추출하므로 무해.
 
 # ── 업스케일 배율 ──────────────────────────────────────────────────────────────
 _SC_NAME  = 4
@@ -267,7 +276,7 @@ def _extract_count(text: str) -> int:
     """
     t = (text.strip()
          .replace('O', '0').replace('o', '0')
-         .replace('I', '1').replace('l', '1')
+         .replace('I', '1').replace('l', '1').replace('-', '1')
          .replace('S', '5').replace('s', '5'))
     m = re.search(r'\d+', t)
     if not m:
@@ -282,7 +291,21 @@ def _match_part_name(raw: str) -> str:
     return max(PART_NAMES, key=lambda n: difflib.SequenceMatcher(None, raw.strip(), n).ratio())
 
 
-_NAME_MARGIN_THRESH = 0.12  # 1위/2위 ratio 차이가 이보다 작으면 모호한 매칭으로 간주
+_NAME_MARGIN_THRESH = 0.12
+
+def _match_part_name_en(raw: str) -> tuple:
+    """영어 OCR 텍스트를 PART_NAMES_EN으로 퍼지 매칭. (ko_name, ratio, margin) 반환."""
+    if not raw:
+        return "", 0.0, 0.0
+    upper = raw.upper()
+    scored = sorted(
+        ((difflib.SequenceMatcher(None, upper, n).ratio(), n) for n in PART_NAMES_EN),
+        reverse=True,
+    )
+    best_ratio, best_en = scored[0]
+    second_ratio = scored[1][0] if len(scored) > 1 else 0.0
+    return _EN_TO_KO[best_en], best_ratio, best_ratio - second_ratio
+
 
 def _match_part_name_with_margin(raw: str) -> tuple:
     """PART_NAMES 중 1위 매칭과 (name, ratio, margin, confusable) 반환.
@@ -359,7 +382,7 @@ def _recog_count(ocr, crop: np.ndarray) -> int:
 
 # ── 메인 처리 ─────────────────────────────────────────────────────────────────
 
-def process_frame_parts(ocr_kor, ocr_or_img, img=None, count_ocr=None) -> dict:
+def process_frame_parts(ocr_kor, ocr_or_img, img=None, count_ocr=None, name_ocr=None) -> dict:
     """
     부품 수량 테이블 OCR.
 
@@ -409,74 +432,84 @@ def process_frame_parts(ocr_kor, ocr_or_img, img=None, count_ocr=None) -> dict:
     # PART_NAMES와 무관한 행(타이틀·헤더)을 자연히 걸러내므로, 여기서는
     # "데이터 행을 절대 잘라내지 않는" 것이 정밀한 타이틀 배제보다 더 중요하다.
 
-    # ── 이름 열 전체 OCR (det=True → 박스 y좌표 확보) ────────────────────────
+    # ── 이름 열 전체 OCR (영어 우선, 한국어 보완) ───────────────────────────────
     nx1 = max(0, int(bx + name_x[0] * bw))
     nx2 = min(W, int(bx + name_x[1] * bw))
     name_col = work_img[by:by+bh, nx1:nx2]
 
-    # 같은 행의 분리된 토큰을 y좌표 기준으로 묶어 합칩니다.
-    # ("기어"+"링" → "기어 링", "플랜지"+"너트" → "플랜지 너트" 등)
-    # 같은 줄에 있는 영문 부품명 "(FLANGE NUT)"도 한국어 OCR 박스로 같이
-    # 검출되므로, 합치기 전에 한글 토큰만 남긴다 (영문이 섞이면 fuzzy 매칭이
-    # 깨짐). bbox에 타이틀/헤더가 섞여 들어갈 수 있어 N_ROWS개로 끝나는 게
-    # 보장되지 않으므로 break 없이 두 스케일을 모두 스캔한다.
-    _GROUP_TOL = 0.035  # 같은 줄로 묶을 y 허용 오차 (bbox 높이 비율)
-    row_groups: list[tuple[float, list]] = []
+    _GROUP_TOL = 0.035
+    _EN_NAME_THRESH  = 0.65   # 영어 퍼지 매칭 ratio 최소값
+    _EN_MARGIN_THRESH = 0.10  # 영어 1위/2위 차이 최소값
+
+    # ① 영어 OCR로 이름 인식 (name_ocr이 있으면 사용, 없으면 ocr_kor 폴백)
+    _name_eng = name_ocr if name_ocr is not None else ocr_kor
+    row_groups_en: list[tuple[float, str]] = []  # (y_ratio, raw_text)
     for scale in (_SC_NAME, 2):
         proc = _preprocess(name_col, scale)
-        for box, (text, conf) in ocr_run(ocr_kor, proc):
+        for box, (text, conf) in ocr_run(_name_eng, proc):
             if conf < _NAME_CONF_THRESH:
                 continue
-            tok = text.strip()
-            if not _is_korean_token(tok):
+            tok = text.strip().upper()
+            if len(tok) < 3:
                 continue
             y = sum(pt[1] for pt in box) / 4 / scale / bh
-            x = sum(pt[0] for pt in box) / 4  # x 중심(스케일 픽셀)
-            grp = next((i for i, (gy, _) in enumerate(row_groups)
+            grp = next((i for i, (gy, _) in enumerate(row_groups_en)
                         if abs(gy - y) < _GROUP_TOL), None)
             if grp is None:
-                row_groups.append((y, [(x, tok)]))
+                row_groups_en.append((y, tok))
             else:
-                gy, tokens = row_groups[grp]
-                # 두 스케일을 모두 스캔하므로 같은 토큰이 중복 검출될 수 있음
-                # (예: "육각너트"가 scale=4, scale=2 양쪽에서 잡힘) → 중복은
-                # 합치지 않는다 (퍼지 매칭 ratio가 희석되어 임계값 미달 위험).
-                if tok not in (t for _, t in tokens):
-                    tokens.append((x, tok))
-                row_groups[grp] = ((gy + y) / 2, tokens)
+                gy, prev = row_groups_en[grp]
+                # 더 긴 텍스트가 더 많은 정보를 담고 있으므로 교체
+                if len(tok) > len(prev):
+                    row_groups_en[grp] = ((gy + y) / 2, tok)
+                else:
+                    row_groups_en[grp] = ((gy + y) / 2, prev)
 
-    # 합쳐진 텍스트를 PART_NAMES로 매칭 (토큰을 x 순서로 합산)
-    # 같은 이름이 중복 매칭되면 ratio가 더 높은 쪽을 채택한다.
-    # margin 체크: "너트"처럼 여러 부품의 공통 접미사만 잡히면 ratio는
-    # 임계값을 넘어도(예: 0.67) 2위 후보와 차이가 작아 어느 행인지 특정할
-    # 수 없다 → margin이 작은 매칭은 일단 보류한다 (행을 못 찾는 것이 잘못된
-    # 행에 배정하는 것보다 안전).
-    names_y: list[tuple[float, str, float]] = []  # (y, name, ratio)
-    ambiguous: list[tuple[float, set]] = []        # (y, confusable_names) — margin 미달
-    for y, tokens in sorted(row_groups, key=lambda r: r[0]):
-        combined = " ".join(t for _, t in sorted(tokens, key=lambda p: p[0]))
-        matched, ratio, margin, confusable = _match_part_name_with_margin(combined)
-        if ratio < _NAME_MATCH_THRESH:
+    names_y: list[tuple[float, str, float]] = []  # (y, ko_name, ratio)
+    for y, raw in sorted(row_groups_en, key=lambda r: r[0]):
+        ko_name, ratio, margin = _match_part_name_en(raw)
+        if ratio < _EN_NAME_THRESH or margin < _EN_MARGIN_THRESH:
             continue
-        if margin < _NAME_MARGIN_THRESH:
-            ambiguous.append((y, confusable))
-            continue
-        dup = next((i for i, (_, n, _r) in enumerate(names_y) if n == matched), None)
+        dup = next((i for i, (_, n, _r) in enumerate(names_y) if n == ko_name), None)
         if dup is None:
-            names_y.append((y, matched, ratio))
+            names_y.append((y, ko_name, ratio))
         elif ratio > names_y[dup][2]:
-            names_y[dup] = (y, matched, ratio)
+            names_y[dup] = (y, ko_name, ratio)
 
-    # 소거법: 확정 매칭 후 남은 부품이 정확히 모호한 그룹의 후보 집합과 1개만
-    # 겹치면, 다른 가능성이 없으므로 그 부품으로 확정한다.
-    # ("너트"만 읽힌 행도, 나머지 4개가 이미 확정됐다면 남는 건 "돔 너트"뿐)
-    missing = set(PART_NAMES) - {n for _, n, _ in names_y}
-    for y, confusable in ambiguous:
-        candidates = confusable & missing
-        if len(candidates) == 1:
-            name = next(iter(candidates))
-            names_y.append((y, name, _NAME_MATCH_THRESH))
-            missing.discard(name)
+    # ② 영어로 못 잡은 행을 한국어 OCR로 보완 (name_ocr이 영어 OCR인 경우에만)
+    if name_ocr is not None and len(names_y) < N_ROWS:
+        ko_row_groups: list[tuple[float, list]] = []
+        for scale in (_SC_NAME, 2):
+            proc = _preprocess(name_col, scale)
+            for box, (text, conf) in ocr_run(ocr_kor, proc):
+                if conf < _NAME_CONF_THRESH:
+                    continue
+                tok = text.strip()
+                if not _is_korean_token(tok):
+                    continue
+                y = sum(pt[1] for pt in box) / 4 / scale / bh
+                # 이미 영어로 확정된 행 근처는 건너뜀
+                if any(abs(yn - y) < _GROUP_TOL * 2 for yn, _, _ in names_y):
+                    continue
+                grp = next((i for i, (gy, _) in enumerate(ko_row_groups)
+                            if abs(gy - y) < _GROUP_TOL), None)
+                if grp is None:
+                    ko_row_groups.append((y, [(0, tok)]))
+                else:
+                    gy, toks = ko_row_groups[grp]
+                    if tok not in (t for _, t in toks):
+                        toks.append((0, tok))
+                    ko_row_groups[grp] = ((gy + y) / 2, toks)
+        already = {n for _, n, _ in names_y}
+        for y, toks in sorted(ko_row_groups, key=lambda r: r[0]):
+            combined = " ".join(t for _, t in toks)
+            matched, ratio, margin, _ = _match_part_name_with_margin(combined)
+            if ratio < _NAME_MATCH_THRESH or margin < _NAME_MARGIN_THRESH:
+                continue
+            if matched in already:
+                continue
+            names_y.append((y, matched, ratio))
+            already.add(matched)
 
     names_y.sort(key=lambda r: r[0])
 
@@ -491,109 +524,53 @@ def process_frame_parts(ocr_kor, ocr_or_img, img=None, count_ocr=None) -> dict:
         row_gap = 1.0 / (N_ROWS + 3)  # 타이틀+헤더 포함 추정치 (이름 매칭 부족 시)
     match_tol = max(row_gap * 0.6, 0.02)
 
-    # ── 수량 열 전체 OCR (det=True → 박스 y좌표 확보) ────────────────────────
+    # ── 수량 열: names_y 행 위치 기반으로 행별 crop → recog_only ──────────────
+    # det 단계에서 얇은 '1' 폰트를 못 찾는 문제를 우회.
+    # names_y의 y 좌표를 이미 알고 있으므로 행별로 잘라서 바로 인식.
     cx1 = max(0, int(bx + count_x[0] * bw))
     cx2 = min(W, int(bx + count_x[1] * bw))
-    # 마지막 행 숫자가 bbox 하단에 걸릴 수 있으므로 아래로 확장
-    cy2 = min(H, by + bh + int(bh * _COUNT_BOT_EXT))
-    count_col = work_img[by:cy2, cx1:cx2]
 
-    counts_raw: list[tuple[float, int, float]] = []  # (y_ratio, count, conf)
-    for scale in (4, 2, 6):
-        proc = _preprocess(count_col, scale)
-        for box, (text, conf) in ocr_run(count_ocr, proc):
-            if conf < _COUNT_CONF_THRESH:
-                continue
-            v = _extract_count(text)
-            if v < 0:
-                continue
-            y_center = sum(pt[1] for pt in box) / 4 / scale / bh
-            counts_raw.append((y_center, v, conf))
-
-    # y가 가까운 중복 탐지는 confidence가 가장 높은 것만 채택
-    counts_raw.sort(key=lambda c: c[0])
     counts_y: list[tuple[float, int]] = []  # (y_ratio, count)
-    cluster: list[tuple[float, int, float]] = []
-    for c in counts_raw:
-        if cluster and c[0] - cluster[-1][0] > match_tol:
-            best = max(cluster, key=lambda e: e[2])
-            counts_y.append((best[0], best[1]))
-            cluster = []
-        cluster.append(c)
-    if cluster:
-        best = max(cluster, key=lambda e: e[2])
-        counts_y.append((best[0], best[1]))
+    for y_name, _name, _ in names_y:
+        half = row_gap * 0.45
+        ry1 = max(0.0,  y_name - half)
+        ry2 = min(1.05, y_name + half)
+        row_y1 = max(0, int(by + ry1 * bh))
+        row_y2 = min(H, int(by + ry2 * bh))
+        row_crop = work_img[row_y1:row_y2, cx1:cx2]
+        if row_crop.size == 0:
+            counts_y.append((y_name, -1))
+            continue
 
-    # ── 이름 행 순서와 수량 행 순서를 단조 정렬(monotonic alignment)으로 매칭 ──
-    # 두 열은 같은 물리적 행을 위에서 아래로 순서대로 나열하므로, 단순 최근접
-    # 거리 매칭은 (a) 숫자/한글 글리프의 폰트 메트릭 차이로 같은 행이어도 y중심이
-    # 살짝 어긋나는 계통 오차와 (b) 헤더/영문 부품명 잔여 텍스트의 오검출 때문에
-    # 인접 행끼리 서로 자리를 "훔치는" 연쇄 오류가 났다.
-    #
-    # 먼저 이름 행 범위(첫~끝 행 ± 반 행) 밖의 수량 검출은 타이틀/헤더 잡음으로
-    # 보고 제거한다. 그 결과 개수가 이름 행 개수와 정확히 같으면 — 둘 다 같은
-    # 물리적 행을 위→아래 순서로 나열한 것이므로 — 절대 좌표 거리 없이 순서대로
-    # 그대로 1:1 대응시킨다 (계통 오차에 전혀 영향받지 않는 가장 안전한 경우).
-    # 개수가 다를 때만(누락·잔여 잡음) 거리 기반 단조 정렬 DP로 최선의 결합을
-    # 찾는다 — 매칭 개수를 최대화한 뒤 누적 거리를 최소화하는 부분 매칭.
-    if names_y:
-        lo = names_y[0][0] - row_gap * 0.5
-        hi = names_y[-1][0] + row_gap * 0.5
-        counts_y = [(y, v) for y, v in counts_y if lo <= y <= hi]
+        count = -1
+        for preproc_fn in (_preprocess, _preprocess_binarize):
+            for scale in (6, 4, 2):
+                proc = preproc_fn(row_crop, scale)
+                # det 방식 우선 (0 인식에 강함), 실패 시 recog_only (1 인식에 강함)
+                for use_det in (True, False):
+                    if use_det:
+                        results = [(text, conf) for _, (text, conf) in ocr_run(count_ocr, proc)]
+                    else:
+                        results = ocr_recog_only(count_ocr, proc)
+                    for text, conf in results:
+                        if conf < _COUNT_CONF_THRESH:
+                            continue
+                        v = _extract_count(text)
+                        if v >= 0:
+                            count = v
+                            break
+                    if count >= 0:
+                        break
+                if count >= 0:
+                    break
+            if count >= 0:
+                break
+        counts_y.append((y_name, count))
 
-    if len(counts_y) == len(names_y):
-        name_to_count: dict[str, int] = {
-            name: v for (_, name, _ratio), (_, v) in zip(names_y, counts_y)
-        }
-        for part in PART_NAMES:
-            name_to_count.setdefault(part, -1)
-        return {
-            "screen_detected": True,
-            "bbox": [bx, by, bw, bh],
-            "col_ratios": {"name_x": list(name_x), "count_x": list(count_x)},
-            "parts": [{"name": n, "count": name_to_count[n]} for n in PART_NAMES],
-            "elapsed_ms": round((time.time() - t0) * 1000, 1),
-        }
-
-    n, m = len(names_y), len(counts_y)
-    max_dist = row_gap * 0.8
-    # dp[i][j] = (i번째까지의 이름, j번째까지의 수량을 썼을 때) 최대 매칭 수,
-    # 그 중 최소 누적 거리. back[i][j]에 선택한 전이를 기록해 역추적한다.
-    dp = [[(0, 0.0) for _ in range(m + 1)] for _ in range(n + 1)]
-    back = [[None] * (m + 1) for _ in range(n + 1)]
-    for i in range(1, n + 1):
-        dp[i][0] = dp[i - 1][0]
-        back[i][0] = "skip_name"
-    for j in range(1, m + 1):
-        dp[0][j] = dp[0][j - 1]
-        back[0][j] = "skip_count"
-    for i in range(1, n + 1):
-        for j in range(1, m + 1):
-            best = (dp[i - 1][j][0], -dp[i - 1][j][1])  # skip name (maximize: matches, -cost)
-            choice = "skip_name"
-            cand = (dp[i][j - 1][0], -dp[i][j - 1][1])
-            if cand > best:
-                best, choice = cand, "skip_count"
-            dist = abs(names_y[i - 1][0] - counts_y[j - 1][0])
-            if dist <= max_dist:
-                pm, pc = dp[i - 1][j - 1]
-                cand = (pm + 1, -(pc + dist))
-                if cand > best:
-                    best, choice = cand, "match"
-            dp[i][j] = (best[0], -best[1])
-            back[i][j] = choice
-
+    # counts_y는 names_y와 1:1로 대응 (행별 crop으로 만들었으므로 순서 보장)
     name_to_count: dict[str, int] = {}
-    i, j = n, m
-    while i > 0 or j > 0:
-        choice = back[i][j]
-        if choice == "match":
-            name_to_count[names_y[i - 1][1]] = counts_y[j - 1][1]
-            i, j = i - 1, j - 1
-        elif choice == "skip_name":
-            i -= 1
-        else:
-            j -= 1
+    for (_, name, _ratio), (_, v) in zip(names_y, counts_y):
+        name_to_count[name] = v
 
     # 미인식 부품 → -1
     for part in PART_NAMES:

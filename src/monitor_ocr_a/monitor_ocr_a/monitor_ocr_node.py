@@ -86,18 +86,17 @@ class MonitorOCRNode(Node):
         self.get_logger().info('PaddleOCR 초기화 중...')
         self.get_logger().info(f'OCR mode: {self._effective_ocr_mode}')
         self.ocr_kor = make_ocr('korean', det_thresh=0.1,  det_box_thresh=0.2,  det_unclip=2.5)
-        self.ocr_en = None
-        self._parts_count_ocr = self.ocr_kor
-        if self._effective_ocr_mode == 'dual':
+        # parts_mode는 이름 인식에 영어 OCR을 항상 사용 (한국어 OCR보다 정확)
+        if self._parts_mode or self._effective_ocr_mode == 'dual':
             self.ocr_en = make_ocr('en', det_thresh=0.08, det_box_thresh=0.15, det_unclip=3.0)
-            if self._parts_mode:
-                self._parts_count_ocr = self.ocr_en
-        if self._parts_mode and self._effective_ocr_mode == 'korean_only':
+        else:
+            self.ocr_en = None
+        self._parts_count_ocr = self.ocr_kor
+        if self._parts_mode:
             self.get_logger().info(
-                'PARTS mode: using Korean OCR for both part names and counts')
-        elif self._parts_mode:
-            self.get_logger().info(
-                'PARTS mode: using Korean OCR for part names and English OCR for counts')
+                'PARTS mode: English OCR for part names, Korean OCR for counts')
+        elif self._effective_ocr_mode == 'dual':
+            self.get_logger().info('dual OCR mode')
         self.get_logger().info(f'PaddleOCR 초기화 완료 - {self._effective_ocr_mode}')
 
         self.bridge      = CvBridge()
@@ -193,7 +192,9 @@ class MonitorOCRNode(Node):
                 try:
                     if self._parts_mode:
                         raw = process_frame_parts(
-                            self.ocr_kor, img, count_ocr=self._parts_count_ocr)
+                            self.ocr_kor, img,
+                            count_ocr=self._parts_count_ocr,
+                            name_ocr=self.ocr_en)
                     elif self._sequence_mode:
                         raw = process_frame_sequence(self.ocr_kor, self.ocr_en, img)
                     elif self._hq_mode:
