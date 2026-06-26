@@ -32,8 +32,33 @@ from monitor_ocr_c.ocr_pipeline_parts import (
     _preprocess_binarize,
     _match_part_name,
     _NAME_CONF_THRESH,
+    PART_NAMES,
 )
 from monitor_ocr_c.paddle_compat import ocr_run
+import difflib as _difflib
+
+PART_NAMES_EN = ["FLANGE NUT", "GEAR RING", "SPACER RING", "HEX NUT", "DOME NUT"]
+_EN_TO_KO = {
+    "FLANGE NUT":  "플랜지 너트",
+    "GEAR RING":   "기어 링",
+    "SPACER RING": "스페이서 링",
+    "HEX NUT":     "육각 너트",
+    "DOME NUT":    "돔 너트",
+}
+_EN_NAME_THRESH  = 0.65
+_EN_MARGIN_THRESH = 0.10
+
+
+def _match_part_name_en(raw: str) -> tuple:
+    """영어 OCR 텍스트를 PART_NAMES_EN으로 퍼지 매칭. (ko_name, ratio, margin) 반환."""
+    upper = raw.upper()
+    scored = sorted(
+        ((_difflib.SequenceMatcher(None, upper, n).ratio(), n) for n in PART_NAMES_EN),
+        reverse=True,
+    )
+    best_ratio, best_en = scored[0]
+    second_ratio = scored[1][0] if len(scored) > 1 else 0.0
+    return _EN_TO_KO[best_en], best_ratio, best_ratio - second_ratio
 
 
 PEG_COUNT = 4
@@ -138,13 +163,29 @@ def _group_rows(items: list, tol: float) -> list:
     return rows
 
 
-def _recog_peg_name(ocr_kor, crop) -> tuple:
-    """Peg 칸의 이름 영역 crop → 한글 토큰만 모아 PART_NAMES 퍼지 매칭. (name, ratio) 반환."""
+def _recog_peg_name(ocr_kor, crop, ocr_en=None) -> tuple:
+    """Peg 칸 crop → 영어 OCR 우선으로 부품명 인식. (name, ratio) 반환."""
     if crop.size == 0:
         return "", 0.0
 
-    row_tol = max(5.0, crop.shape[0] * 0.18)
+    _name_eng = ocr_en if ocr_en is not None else ocr_kor
 
+    # ① 영어 OCR로 시도
+    for scale in (_SC_NAME, 2):
+        for preproc in (_preprocess, _preprocess_binarize):
+            best_name, best_ratio, best_margin = "", 0.0, 0.0
+            for box, (text, conf) in ocr_run(_name_eng, preproc(crop, scale)):
+                tok = text.strip()
+                if conf < _NAME_CONF_THRESH or len(tok) < 3:
+                    continue
+                name, ratio, margin = _match_part_name_en(tok)
+                if ratio > best_ratio:
+                    best_name, best_ratio, best_margin = name, ratio, margin
+            if best_ratio >= _EN_NAME_THRESH and best_margin >= _EN_MARGIN_THRESH:
+                return best_name, best_ratio
+
+    # ② 영어 실패 시 한국어 OCR 폴백
+    row_tol = max(5.0, crop.shape[0] * 0.18)
     for scale in (_SC_NAME, 2):
         items = []
         for preproc in (_preprocess, _preprocess_binarize):
@@ -157,11 +198,7 @@ def _recog_peg_name(ocr_kor, crop) -> tuple:
         if not items:
             continue
         rows = _group_rows(items, row_tol)
-        # 두 preproc(원본/이진화)을 모두 모으므로 같은 토큰이 중복 검출될 수
-        # 있다 (예: "플랜지"가 양쪽에서 잡혀 raw="플랜지 플랜지") → 중복은
-        # 합치지 않는다 (퍼지 매칭 ratio가 희석되어 임계값 미달 위험).
-        seen = set()
-        tokens = []
+        seen, tokens = set(), []
         for _, toks in rows:
             for _, t in sorted(toks, key=lambda p: p[0]):
                 if t not in seen:
@@ -169,7 +206,7 @@ def _recog_peg_name(ocr_kor, crop) -> tuple:
                     tokens.append(t)
         raw = " ".join(tokens)
         matched = _match_part_name(raw)
-        ratio   = difflib.SequenceMatcher(None, raw, matched).ratio()
+        ratio = _difflib.SequenceMatcher(None, raw, matched).ratio()
         if ratio >= _NAME_MATCH_THRESH:
             return matched, ratio
 
@@ -220,7 +257,7 @@ def process_frame_sequence(ocr_kor, ocr_en, img) -> dict:
     for i in range(PEG_COUNT):
         x1 = max(0, int(bx + peg_xs[i]     * bw))
         x2 = min(W, int(bx + peg_xs[i + 1] * bw))
-        name, _ratio = _recog_peg_name(ocr_kor, work_img[ny1:ny2, x1:x2])
+        name, _ratio = _recog_peg_name(ocr_kor, work_img[ny1:ny2, x1:x2], ocr_en=ocr_en)
         sequence.append(name)
 
     return {
