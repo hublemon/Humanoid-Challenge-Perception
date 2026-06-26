@@ -79,6 +79,14 @@ class ZedTargetCenterNode(Node):
         self.declare_parameter('surface_depth_percentile', 50.0)
         self.declare_parameter('top_depth_percentile', 35.0)
 
+        # ---- endpoint target (drill tip / corner) ----------------------
+        self.declare_parameter('endpoint_policy', 'rightmost')
+        self.declare_parameter('endpoint_inset_ratio', 0.12)
+        self.declare_parameter('endpoint_depth_radius_px', 5)
+        self.declare_parameter('endpoint_depth_percentile', 50.0)
+        self.declare_parameter('endpoint_min_valid_points', 3)
+        self.declare_parameter('endpoint_output_pixel', 'endpoint')
+
         # ---- mask / bbox sanity ----------------------------------------
         self.declare_parameter('mask_erosion_px', 0)
         self.declare_parameter('min_bbox_width_px', 5)
@@ -135,6 +143,13 @@ class ZedTargetCenterNode(Node):
         self.surface_inner_scale = float(gp('surface_inner_scale').value)
         self.surface_depth_percentile = float(gp('surface_depth_percentile').value)
         self.top_depth_percentile = float(gp('top_depth_percentile').value)
+
+        self.endpoint_policy = str(gp('endpoint_policy').value).lower()
+        self.endpoint_inset_ratio = float(gp('endpoint_inset_ratio').value)
+        self.endpoint_depth_radius_px = int(gp('endpoint_depth_radius_px').value)
+        self.endpoint_depth_percentile = float(gp('endpoint_depth_percentile').value)
+        self.endpoint_min_valid_points = int(gp('endpoint_min_valid_points').value)
+        self.endpoint_output_pixel = str(gp('endpoint_output_pixel').value).lower()
 
         self.mask_erosion_px = int(gp('mask_erosion_px').value)
         self.min_bbox_width_px = float(gp('min_bbox_width_px').value)
@@ -302,6 +317,8 @@ class ZedTargetCenterNode(Node):
         if bbox is None or not self._bbox_size_ok(bbox):
             return None
 
+        if self.preset.target_mode == 'endpoint':
+            return self._estimate_endpoint_target(det, mask, bbox, depth_m, rgb_info, h, w)
         if self.preset.target_mode == 'hole':
             return self._estimate_hole_target(det, mask, bbox, depth_m, rgb_info, h, w)
         if self.preset.target_mode == 'top_surface':
@@ -309,6 +326,169 @@ class ZedTargetCenterNode(Node):
                 det, mask, bbox, depth_m, rgb_info, h, w, use_top_percentile=True)
         return self._estimate_surface_target(
             det, mask, bbox, depth_m, rgb_info, h, w, use_top_percentile=False)
+
+    def _estimate_endpoint_target(self, det, mask, bbox, depth_m, rgb_info, h, w):
+        """Estimate a drill endpoint using endpoint pixel + inset depth (plan A).
+
+        The 2D output pixel is the selected endpoint/corner. Depth is sampled
+        slightly inside the detected drill mask/bbox so that edge/background
+        depth at the exact contour point does not dominate the 3D result.
+        """
+        endpoint_uv, inset_uv = self._select_endpoint_and_inset(mask, bbox, w, h)
+        if endpoint_uv is None or inset_uv is None:
+            return None
+
+        sample_mask = self._endpoint_depth_sample_mask(mask, bbox, inset_uv, h, w)
+        vs, us = np.where(sample_mask > 0)
+        z = depth_m[vs, us]
+        valid = (z >= self.min_depth_m) & (z <= self.max_depth_m)
+        z = z[valid]
+
+        if z.size < self.endpoint_min_valid_points:
+            _, _, z_w = self._window_valid_depth(inset_uv, depth_m)
+            if z_w.size >= self.endpoint_min_valid_points:
+                z = z_w
+
+        if z.size < self.endpoint_min_valid_points:
+            _, _, z_w = self._window_valid_depth(endpoint_uv, depth_m)
+            if z_w.size >= self.endpoint_min_valid_points:
+                z = z_w
+
+        if z.size < self.endpoint_min_valid_points:
+            self._warn(
+                f'endpoint valid depth points {z.size} < min '
+                f'{self.endpoint_min_valid_points}; skipping.',
+                2.0)
+            return None
+
+        output_uv = endpoint_uv
+        if self.endpoint_output_pixel == 'inset':
+            output_uv = inset_uv
+
+        z_est = float(np.percentile(z, self.endpoint_depth_percentile))
+        center = self._backproject_single(output_uv[0], output_uv[1], z_est, rgb_info)
+        method = f'endpoint_{self.endpoint_policy}_inset_depth'
+        return center, output_uv, bbox, sample_mask, method
+
+    def _select_endpoint_and_inset(self, mask, bbox, w, h):
+        endpoint_uv = self._select_endpoint_uv(mask, bbox)
+        if endpoint_uv is None:
+            return None, None
+
+        centroid_uv = self._mask_or_bbox_centroid(mask, bbox)
+        inset_ratio = max(0.0, min(0.95, self.endpoint_inset_ratio))
+        endpoint = np.asarray(endpoint_uv, dtype=np.float64)
+        centroid = np.asarray(centroid_uv, dtype=np.float64)
+        inset = endpoint + inset_ratio * (centroid - endpoint)
+
+        endpoint[0] = np.clip(endpoint[0], 0, w - 1)
+        endpoint[1] = np.clip(endpoint[1], 0, h - 1)
+        inset[0] = np.clip(inset[0], 0, w - 1)
+        inset[1] = np.clip(inset[1], 0, h - 1)
+        return (float(endpoint[0]), float(endpoint[1])), (float(inset[0]), float(inset[1]))
+
+    def _select_endpoint_uv(self, mask, bbox):
+        policy = self.endpoint_policy
+        x1, y1, x2, y2 = bbox
+        bbox_points = {
+            'bbox_tl': (float(x1), float(y1)),
+            'bbox_tr': (float(x2 - 1), float(y1)),
+            'bbox_bl': (float(x1), float(y2 - 1)),
+            'bbox_br': (float(x2 - 1), float(y2 - 1)),
+        }
+        if policy in bbox_points:
+            return bbox_points[policy]
+
+        points = self._endpoint_candidate_points(mask, bbox)
+        if points.size == 0:
+            return None
+
+        centroid = np.asarray(self._mask_or_bbox_centroid(mask, bbox), dtype=np.float64)
+
+        if policy == 'leftmost':
+            return self._extreme_point(points, axis=0, sign=-1, tie_center=centroid)
+        if policy == 'topmost':
+            return self._extreme_point(points, axis=1, sign=-1, tie_center=centroid)
+        if policy == 'bottommost':
+            return self._extreme_point(points, axis=1, sign=1, tie_center=centroid)
+        if policy == 'pca_positive' or policy == 'pca_negative':
+            return self._pca_endpoint(points, positive=(policy == 'pca_positive'))
+
+        # Default is rightmost because the drill bit/tip is expected to be the
+        # right-most visible endpoint in the current scenario. Change by param
+        # if the camera view or drill placement is different.
+        return self._extreme_point(points, axis=0, sign=1, tie_center=centroid)
+
+    @staticmethod
+    def _endpoint_candidate_points(mask, bbox):
+        if mask is not None and mask.any():
+            cnts, _ = cv2.findContours(
+                mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if cnts:
+                cnt = max(cnts, key=cv2.contourArea).reshape(-1, 2)
+                if cnt.size > 0:
+                    return cnt.astype(np.float64)
+        x1, y1, x2, y2 = bbox
+        return np.array([
+            [x1, y1],
+            [x2 - 1, y1],
+            [x1, y2 - 1],
+            [x2 - 1, y2 - 1],
+        ], dtype=np.float64)
+
+    @staticmethod
+    def _extreme_point(points, axis, sign, tie_center):
+        vals = points[:, axis]
+        target = vals.max() if sign > 0 else vals.min()
+        close = np.isclose(vals, target, atol=1.0)
+        subset = points[close]
+        if subset.shape[0] == 0:
+            subset = points
+        d = np.linalg.norm(subset - tie_center.reshape(1, 2), axis=1)
+        p = subset[int(np.argmin(d))]
+        return float(p[0]), float(p[1])
+
+    @staticmethod
+    def _pca_endpoint(points, positive=True):
+        if points.shape[0] < 2:
+            p = points[0]
+            return float(p[0]), float(p[1])
+        centroid = points.mean(axis=0)
+        q = points - centroid
+        try:
+            _, _, vh = np.linalg.svd(q, full_matrices=False)
+        except np.linalg.LinAlgError:
+            p = points[0]
+            return float(p[0]), float(p[1])
+        axis_vec = vh[0]
+        proj = q @ axis_vec
+        idx = int(np.argmax(proj) if positive else np.argmin(proj))
+        p = points[idx]
+        return float(p[0]), float(p[1])
+
+    @staticmethod
+    def _mask_or_bbox_centroid(mask, bbox):
+        if mask is not None and mask.any():
+            moments = cv2.moments(mask, binaryImage=True)
+            if moments['m00'] > 0.0:
+                return moments['m10'] / moments['m00'], moments['m01'] / moments['m00']
+        return (bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0
+
+    def _endpoint_depth_sample_mask(self, mask, bbox, inset_uv, h, w):
+        sample = np.zeros((h, w), dtype=np.uint8)
+        u = int(round(inset_uv[0]))
+        v = int(round(inset_uv[1]))
+        radius = max(1, int(self.endpoint_depth_radius_px))
+        cv2.circle(sample, (u, v), radius, 255, -1)
+
+        if mask is not None and mask.any():
+            sample = cv2.bitwise_and(sample, mask.astype(np.uint8))
+        else:
+            bbox_mask = np.zeros((h, w), dtype=np.uint8)
+            x1, y1, x2, y2 = bbox
+            bbox_mask[y1:y2, x1:x2] = 255
+            sample = cv2.bitwise_and(sample, bbox_mask)
+        return sample
 
     def _estimate_surface_target(
         self,
@@ -345,7 +525,7 @@ class ZedTargetCenterNode(Node):
                 vs = vs[keep]
                 z = z[keep]
 
-        if use_top_percentile and self.use_plane_fit and z.size >= self.plane_fit_min_points:
+        if self.use_plane_fit and z.size >= self.plane_fit_min_points:
             pts = self._backproject_pixels(us, vs, z, rgb_info)
             plane = self._fit_plane_robust(pts)
             if plane is not None:
