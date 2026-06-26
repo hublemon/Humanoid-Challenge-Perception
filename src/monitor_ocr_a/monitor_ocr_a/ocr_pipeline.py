@@ -123,17 +123,27 @@ def find_display_yolo(img, conf_thresh=0.50, out_scale=1):
     if masks is None or len(masks.xy) == 0:
         return None
 
-    best = int(boxes.conf.argmax())
+    # conf_thresh 통과한 것 중 가장 큰 bbox 선택 (오감지는 보통 작음)
+    xyxy_all = boxes.xyxy.cpu().numpy().astype(int)
+    confs    = boxes.conf.cpu().numpy()
+    best = None
+    best_area = -1
+    for i, (conf, (x1, y1, x2, y2)) in enumerate(zip(confs, xyxy_all)):
+        if float(conf) < conf_thresh:
+            continue
+        dw, dh = x2 - x1, y2 - y1
+        if dh == 0 or dw / dh > 6.0:
+            continue
+        area = dw * dh
+        if area > best_area:
+            best_area = area
+            best = i
 
-    # 신뢰도 필터
-    if float(boxes.conf[best]) < conf_thresh:
+    if best is None:
         return None
 
-    # 비율 검증: 너무 납작한 영역(aspect < 1.0)은 바닥/테이블 오감지로 간주
-    x1, y1, x2, y2 = boxes.xyxy[best].cpu().numpy().astype(int)
+    x1, y1, x2, y2 = xyxy_all[best]
     det_w, det_h = x2 - x1, y2 - y1
-    if det_h == 0 or det_w / det_h > 6.0:
-        return None
 
     corners = _mask_to_quad(masks.xy[best])
 

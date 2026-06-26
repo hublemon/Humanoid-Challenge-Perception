@@ -164,27 +164,29 @@ def _group_rows(items: list, tol: float) -> list:
 
 
 def _recog_peg_name(ocr_kor, crop, ocr_en=None) -> tuple:
-    """Peg 칸 crop → 영어 OCR 우선으로 부품명 인식. (name, ratio) 반환."""
+    """Peg 칸 crop → 영어 OCR 우선으로 부품명 인식. (name, ratio) 반환.
+    항상 5개 부품 중 가장 가까운 것을 반환 (threshold 미달해도 최선 반환)."""
     if crop.size == 0:
-        return "", 0.0
+        return "플랜지 너트", 0.0
 
     _name_eng = ocr_en if ocr_en is not None else ocr_kor
+
+    global_best_name, global_best_ratio = "", 0.0
 
     # ① 영어 OCR로 시도
     for scale in (_SC_NAME, 2):
         for preproc in (_preprocess, _preprocess_binarize):
-            best_name, best_ratio, best_margin = "", 0.0, 0.0
             for box, (text, conf) in ocr_run(_name_eng, preproc(crop, scale)):
                 tok = text.strip()
                 if conf < _NAME_CONF_THRESH or len(tok) < 3:
                     continue
                 name, ratio, margin = _match_part_name_en(tok)
-                if ratio > best_ratio:
-                    best_name, best_ratio, best_margin = name, ratio, margin
-            if best_ratio >= _EN_NAME_THRESH and best_margin >= _EN_MARGIN_THRESH:
-                return best_name, best_ratio
+                if ratio > global_best_ratio:
+                    global_best_name, global_best_ratio = name, ratio
+                if ratio >= _EN_NAME_THRESH and margin >= _EN_MARGIN_THRESH:
+                    return name, ratio
 
-    # ② 영어 실패 시 한국어 OCR 폴백
+    # ② 한국어 OCR 폴백
     row_tol = max(5.0, crop.shape[0] * 0.18)
     for scale in (_SC_NAME, 2):
         items = []
@@ -207,10 +209,17 @@ def _recog_peg_name(ocr_kor, crop, ocr_en=None) -> tuple:
         raw = " ".join(tokens)
         matched = _match_part_name(raw)
         ratio = _difflib.SequenceMatcher(None, raw, matched).ratio()
+        if ratio > global_best_ratio:
+            global_best_name, global_best_ratio = matched, ratio
         if ratio >= _NAME_MATCH_THRESH:
             return matched, ratio
 
-    return "", 0.0
+    # ③ threshold 미달해도 지금까지 가장 가까운 것 반환
+    if global_best_name:
+        return global_best_name, global_best_ratio
+
+    # ④ OCR 자체가 아무것도 못 읽은 경우 — 5개 중 랜덤이 아닌 가장 흔한 첫 번째
+    return "플랜지 너트", 0.0
 
 
 # ─── 메인 처리 ───────────────────────────────────────────────────────────────
