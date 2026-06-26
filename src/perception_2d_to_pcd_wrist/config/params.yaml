@@ -20,6 +20,8 @@ wrist_task_grasp_planner_node:
     depth_frame: ""
     camera_name: "wrist_right"
     use_latest_tf_on_zero_stamp: true
+    tf_lookup_time_offset_sec: 0.10
+    tf_buffer_cache_sec: 30.0
 
     # Depth filtering.
     depth_scale: 0.001

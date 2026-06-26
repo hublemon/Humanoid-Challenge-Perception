@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 import threading
 import cv2
@@ -47,6 +48,42 @@ class TargetPreset:
     default_debug_topic: str
 
 
+@dataclass
+class TargetEstimate:
+    """3D center estimate plus debug/quality metadata."""
+
+    center_cam: np.ndarray
+    center_uv: tuple[float, float]
+    bbox: tuple[int, int, int, int]
+    overlay_mask: object
+    method: str
+    plane_residual: float | None = None
+    plane_inliers: int = 0
+    depth_point_count: int = 0
+    normal_rejected: bool = False
+
+
+@dataclass
+class PoseCandidate:
+    """Pose candidate used for short-window temporal smoothing."""
+
+    stamp_sec: float
+    target_class: str
+    center_cam: np.ndarray
+    center_base: np.ndarray
+    center_uv: tuple[float, float]
+    confidence: float
+    method: str
+
+
+@dataclass
+class TfLookupResult:
+    """Transform result annotated with how it was obtained."""
+
+    transform: object
+    mode: str
+
+
 class ZedTargetCenterNode(Node):
     """Base ROS 2 node that converts one ZED detection into a 3D PoseStamped."""
 
@@ -74,6 +111,7 @@ class ZedTargetCenterNode(Node):
         # ---- depth ------------------------------------------------------
         self.declare_parameter('min_depth_m', 0.15)
         self.declare_parameter('max_depth_m', 5.0)
+        self.declare_parameter('invalid_depth_values', [0, 65535])
         self.declare_parameter('depth_window_px', 5)
         self.declare_parameter('surface_inner_scale', 0.80)
         self.declare_parameter('surface_depth_percentile', 50.0)
@@ -85,6 +123,8 @@ class ZedTargetCenterNode(Node):
         self.declare_parameter('min_bbox_height_px', 5)
         self.declare_parameter('max_bbox_width_px', 10000)
         self.declare_parameter('max_bbox_height_px', 10000)
+        self.declare_parameter('reject_bbox_touching_border', False)
+        self.declare_parameter('border_margin_px', 2)
 
         # ---- ellipse/ring for hole targets -----------------------------
         self.declare_parameter('intersect_ring_with_mask', False)
@@ -98,16 +138,34 @@ class ZedTargetCenterNode(Node):
         self.declare_parameter('plane_outlier_m', 0.015)
         self.declare_parameter('plane_max_mean_residual_m', 0.01)
         self.declare_parameter('rim_depth_percentile', 35.0)
+        self.declare_parameter('plane_normal_gating_enable', False)
+        self.declare_parameter('plane_normal_reference_frame', 'base_link')
+        self.declare_parameter('plane_normal_reference_axis', [0.0, 0.0, 1.0])
+        self.declare_parameter('plane_normal_min_abs_dot', 0.65)
 
         # ---- sync / TF / output ----------------------------------------
         self.declare_parameter('sync_queue_size', 10)
         self.declare_parameter('sync_slop', 0.1)
-        self.declare_parameter('tf_lookup_mode', 'latest')
+        self.declare_parameter('detection_history_size', 30)
+        self.declare_parameter('max_detection_image_dt_sec', 0.12)
+        self.declare_parameter('use_latest_detection_on_zero_stamp', True)
+        self.declare_parameter('max_rgb_depth_dt_sec', 0.05)
+        self.declare_parameter('max_info_image_dt_sec', 0.20)
+        self.declare_parameter('skip_on_large_rgb_depth_dt', False)
+        self.declare_parameter('tf_lookup_mode', 'stamped_then_latest')
         self.declare_parameter('tf_timeout_sec', 0.05)
         self.declare_parameter('max_future_stamp_sec', 0.03)
         self.declare_parameter('allow_latest_tf_fallback', True)
-        self.declare_parameter('output_stamp_policy', 'now')
+        self.declare_parameter('output_stamp_policy', 'image')
         self.declare_parameter('log_targets', True)
+
+        # ---- temporal smoothing ----------------------------------------
+        self.declare_parameter('temporal_smoothing_enable', True)
+        self.declare_parameter('temporal_window_sec', 0.5)
+        self.declare_parameter('temporal_min_observations', 2)
+        self.declare_parameter('temporal_position_gate_m', 0.05)
+        self.declare_parameter('temporal_max_history', 50)
+        self.declare_parameter('require_temporal_min_observations', False)
 
         # ---- debug image -----------------------------------------------
         self.declare_parameter('publish_debug_image', True)
@@ -131,6 +189,7 @@ class ZedTargetCenterNode(Node):
 
         self.min_depth_m = float(gp('min_depth_m').value)
         self.max_depth_m = float(gp('max_depth_m').value)
+        self.invalid_depth_values = set(int(v) for v in gp('invalid_depth_values').value)
         self.depth_window_px = int(gp('depth_window_px').value)
         self.surface_inner_scale = float(gp('surface_inner_scale').value)
         self.surface_depth_percentile = float(gp('surface_depth_percentile').value)
@@ -141,6 +200,8 @@ class ZedTargetCenterNode(Node):
         self.min_bbox_height_px = float(gp('min_bbox_height_px').value)
         self.max_bbox_width_px = float(gp('max_bbox_width_px').value)
         self.max_bbox_height_px = float(gp('max_bbox_height_px').value)
+        self.reject_bbox_touching_border = bool(gp('reject_bbox_touching_border').value)
+        self.border_margin_px = int(gp('border_margin_px').value)
 
         self.intersect_ring_with_mask = bool(gp('intersect_ring_with_mask').value)
         self.ellipse_outer_scale = float(gp('ellipse_outer_scale').value)
@@ -153,9 +214,24 @@ class ZedTargetCenterNode(Node):
         self.plane_outlier_m = float(gp('plane_outlier_m').value)
         self.plane_max_mean_residual_m = float(gp('plane_max_mean_residual_m').value)
         self.rim_depth_percentile = float(gp('rim_depth_percentile').value)
+        self.plane_normal_gating_enable = bool(gp('plane_normal_gating_enable').value)
+        self.plane_normal_reference_frame = str(gp('plane_normal_reference_frame').value)
+        axis = np.asarray(gp('plane_normal_reference_axis').value, dtype=np.float64).reshape(-1)
+        if axis.size != 3 or np.linalg.norm(axis) < 1e-9:
+            self._warn('Invalid plane_normal_reference_axis; using +Z.', 5.0)
+            axis = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+        self.plane_normal_reference_axis = axis / np.linalg.norm(axis)
+        self.plane_normal_min_abs_dot = float(gp('plane_normal_min_abs_dot').value)
 
         self.sync_queue_size = int(gp('sync_queue_size').value)
         self.sync_slop = float(gp('sync_slop').value)
+        self.detection_history_size = max(1, int(gp('detection_history_size').value))
+        self.max_detection_image_dt_sec = float(gp('max_detection_image_dt_sec').value)
+        self.use_latest_detection_on_zero_stamp = bool(
+            gp('use_latest_detection_on_zero_stamp').value)
+        self.max_rgb_depth_dt_sec = float(gp('max_rgb_depth_dt_sec').value)
+        self.max_info_image_dt_sec = float(gp('max_info_image_dt_sec').value)
+        self.skip_on_large_rgb_depth_dt = bool(gp('skip_on_large_rgb_depth_dt').value)
         self.tf_lookup_mode = str(gp('tf_lookup_mode').value).lower()
         self.tf_timeout_sec = float(gp('tf_timeout_sec').value)
         self.max_future_stamp_sec = float(gp('max_future_stamp_sec').value)
@@ -163,12 +239,25 @@ class ZedTargetCenterNode(Node):
         self.output_stamp_policy = str(gp('output_stamp_policy').value).lower()
         self.log_targets = bool(gp('log_targets').value)
 
+        self.temporal_smoothing_enable = bool(gp('temporal_smoothing_enable').value)
+        self.temporal_window_sec = float(gp('temporal_window_sec').value)
+        self.temporal_min_observations = max(
+            1, int(gp('temporal_min_observations').value))
+        self.temporal_position_gate_m = float(gp('temporal_position_gate_m').value)
+        self.temporal_max_history = max(1, int(gp('temporal_max_history').value))
+        self.require_temporal_min_observations = bool(
+            gp('require_temporal_min_observations').value)
+
         self.publish_debug_image = bool(gp('publish_debug_image').value)
         self.debug_image_topic = gp('debug_image_topic').value
 
         self.bridge = CvBridge()
         self._lock = threading.Lock()
-        self._latest_detections = None
+        self._detection_history = deque(maxlen=self.detection_history_size)
+        self._pose_history = deque(maxlen=self.temporal_max_history)
+        self._last_detection_image_dt_sec = None
+        self._last_detection_match_note = ''
+        self._last_estimate_failure = {}
 
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
@@ -206,26 +295,50 @@ class ZedTargetCenterNode(Node):
             f'tf_timeout={self.tf_timeout_sec:.3f}s')
 
     def detections_cb(self, msg: PartDetectionArray) -> None:
-        """Store the latest detector result array."""
+        """Store detector result arrays for image-stamp matching."""
         with self._lock:
-            self._latest_detections = msg
+            self._detection_history.append(msg)
 
     def synced_cb(self, rgb_msg, depth_msg, rgb_info, depth_info) -> None:
         """Process one synchronized RGB/depth/CameraInfo tuple."""
+        image_stamp = rgb_msg.header.stamp
+        stamp_meta = self._check_synced_stamps(rgb_msg, depth_msg, rgb_info, depth_info)
+        if stamp_meta.get('skip_rgb_depth_dt', False):
+            self._publish_debug(
+                rgb_msg,
+                None,
+                None,
+                None,
+                False,
+                'rgb/depth dt too large',
+                meta={
+                    'depth_encoding': depth_msg.encoding,
+                    **stamp_meta,
+                })
+            return
+
         if rgb_info.k[0] <= 0.0 or rgb_info.k[4] <= 0.0:
             self._warn('Invalid RGB CameraInfo intrinsics; skipping.', 5.0)
             return
 
-        with self._lock:
-            det_msg = self._latest_detections
+        det_msg = self._select_detection_msg_for_image(image_stamp)
+        debug_meta = {
+            'depth_encoding': depth_msg.encoding,
+            'detection_dt_sec': self._last_detection_image_dt_sec,
+            'detection_match': self._last_detection_match_note,
+            **stamp_meta,
+        }
         if det_msg is None:
-            self._warn('No detections yet; skipping.', 5.0)
+            reason = self._last_detection_match_note or 'no detections'
+            self._warn(f'{reason}; skipping.', 5.0)
+            self._publish_debug(rgb_msg, None, None, None, False, reason, meta=debug_meta)
             return
 
         det = self._select_detection(det_msg.detections)
         if det is None:
             self._warn(f'No valid {self.target_class!r} detection.', 2.0)
-            self._publish_debug(rgb_msg, None, None, None, False, 'no detection')
+            self._publish_debug(rgb_msg, None, None, None, False, 'no detection',
+                                meta=debug_meta)
             return
 
         try:
@@ -241,44 +354,205 @@ class ZedTargetCenterNode(Node):
                 f'RGB {w}x{h} vs depth {depth_m.shape[1]}x{depth_m.shape[0]} '
                 'mismatch; skipping (registered depth required).',
                 5.0)
+            self._publish_debug(rgb_msg, rgb, None, None, False, 'registered depth required',
+                                meta=debug_meta)
             return
 
         cam_frame = self.camera_frame or rgb_info.header.frame_id or rgb_msg.header.frame_id
         if not cam_frame:
             self._warn('No camera frame available; skipping.', 5.0)
+            self._publish_debug(rgb_msg, rgb, None, None, False, 'no camera frame',
+                                meta=debug_meta)
             return
 
-        result = self._estimate_target(det, rgb, depth_m, rgb_info)
-        if result is None:
-            self._publish_debug(rgb_msg, rgb, None, None, False, '3D failed')
-            return
-        center_cam, center_uv, bbox, aux_mask, method = result
+        tf_result = None
+        if self.plane_normal_gating_enable:
+            tf_result = self._lookup_tf(cam_frame, image_stamp)
+            if tf_result is None:
+                self._publish_debug(rgb_msg, rgb, None, None, False, 'TF failed',
+                                    meta=debug_meta)
+                return
 
-        tf = self._lookup_tf(cam_frame, rgb_msg.header.stamp)
-        if tf is None:
-            self._publish_debug(rgb_msg, rgb, bbox, aux_mask, False, 'TF failed')
+        self._last_estimate_failure = {}
+        estimate = self._estimate_target(
+            det, rgb, depth_m, rgb_info, cam_frame, image_stamp, tf_result)
+        if estimate is None:
+            fail = self._last_estimate_failure
+            reason = fail.get('reason', '3D failed')
+            fail_meta = fail.get('meta', {})
+            self._publish_debug(
+                rgb_msg,
+                rgb,
+                fail.get('bbox'),
+                fail.get('overlay_mask'),
+                False,
+                reason,
+                meta={**debug_meta, **fail_meta})
             return
 
-        base_xyz = self._transform_point(center_cam, cam_frame, tf, rgb_msg.header.stamp)
+        if tf_result is None:
+            tf_result = self._lookup_tf(cam_frame, image_stamp)
+        if tf_result is None:
+            self._publish_debug(rgb_msg, rgb, estimate.bbox, estimate.overlay_mask, False,
+                                'TF failed', estimate.center_uv, meta=debug_meta)
+            return
+
+        base_xyz = self._transform_point(
+            estimate.center_cam, cam_frame, tf_result.transform, image_stamp)
         if base_xyz is None:
-            self._publish_debug(rgb_msg, rgb, bbox, aux_mask, False, 'TF apply failed')
+            self._publish_debug(rgb_msg, rgb, estimate.bbox, estimate.overlay_mask, False,
+                                'TF apply failed', estimate.center_uv,
+                                meta={**debug_meta, 'tf_mode': tf_result.mode})
             return
+
+        raw_base = np.asarray(base_xyz, dtype=np.float64)
+        candidate = PoseCandidate(
+            stamp_sec=self._stamp_to_sec(image_stamp),
+            target_class=self.target_class,
+            center_cam=estimate.center_cam,
+            center_base=raw_base,
+            center_uv=estimate.center_uv,
+            confidence=float(det.confidence),
+            method=estimate.method)
+        smooth_result = self._smooth_pose_candidate(candidate)
+        if smooth_result is None:
+            self._publish_debug(
+                rgb_msg,
+                rgb,
+                estimate.bbox,
+                estimate.overlay_mask,
+                False,
+                'waiting temporal observations',
+                estimate.center_uv,
+                meta={
+                    **debug_meta,
+                    **self._estimate_debug_meta(estimate),
+                    'tf_mode': tf_result.mode,
+                    'smoothing': 'waiting',
+                })
+            return
+        publish_base, smooth_meta = smooth_result
 
         pose = PoseStamped()
         pose.header.frame_id = self.base_frame
-        pose.header.stamp = self._output_stamp(rgb_msg.header.stamp)
-        pose.pose.position.x = base_xyz[0]
-        pose.pose.position.y = base_xyz[1]
-        pose.pose.position.z = base_xyz[2]
+        pose.header.stamp = self._output_stamp(image_stamp)
+        pose.pose.position.x = float(publish_base[0])
+        pose.pose.position.y = float(publish_base[1])
+        pose.pose.position.z = float(publish_base[2])
         pose.pose.orientation.w = 1.0
         self.pub_pose.publish(pose)
 
-        self._publish_debug(rgb_msg, rgb, bbox, aux_mask, True, method, center_uv)
+        publish_meta = {
+            **debug_meta,
+            **self._estimate_debug_meta(estimate),
+            'tf_mode': tf_result.mode,
+            **smooth_meta,
+        }
+        self._publish_debug(
+            rgb_msg, rgb, estimate.bbox, estimate.overlay_mask, True,
+            estimate.method, estimate.center_uv, meta=publish_meta)
         if self.log_targets:
             p = pose.pose.position
+            det_dt = self._format_dt_ms(self._last_detection_image_dt_sec)
+            smooth_text = smooth_meta.get('smoothing', 'raw')
             self.get_logger().info(
                 f'{self.target_class} -> base ({p.x:.3f}, {p.y:.3f}, {p.z:.3f}) m, '
-                f'conf={det.confidence:.2f}, method={method}')
+                f'conf={det.confidence:.2f}, method={estimate.method}, '
+                f'det_dt={det_dt}, tf={tf_result.mode}, {smooth_text}')
+
+    def _select_detection_msg_for_image(self, image_stamp):
+        self._last_detection_image_dt_sec = None
+        self._last_detection_match_note = ''
+
+        with self._lock:
+            history = list(self._detection_history)
+        if not history:
+            self._last_detection_match_note = 'no detections'
+            return None
+
+        latest = history[-1]
+        if self._stamp_is_zero(image_stamp):
+            self._last_detection_match_note = 'image stamp zero; latest detection'
+            return latest
+
+        latest_stamp = latest.header.stamp
+        if self._stamp_is_zero(latest_stamp) and self.use_latest_detection_on_zero_stamp:
+            self._last_detection_match_note = 'zero detection stamp; latest detection'
+            return latest
+
+        timestamped = [
+            msg for msg in history
+            if not self._stamp_is_zero(msg.header.stamp)
+        ]
+        if not timestamped:
+            if self.use_latest_detection_on_zero_stamp:
+                self._last_detection_match_note = 'all detection stamps zero; latest detection'
+                return latest
+            self._last_detection_match_note = 'no timestamped detections'
+            return None
+
+        image_sec = self._stamp_to_sec(image_stamp)
+        best = min(
+            timestamped,
+            key=lambda msg: abs(self._stamp_to_sec(msg.header.stamp) - image_sec))
+        dt = abs(self._stamp_to_sec(best.header.stamp) - image_sec)
+        self._last_detection_image_dt_sec = dt
+        self._last_detection_match_note = f'detection/image dt {dt * 1000.0:.1f}ms'
+
+        if dt > self.max_detection_image_dt_sec:
+            self._last_detection_match_note = (
+                f'detection/image dt too large ({dt * 1000.0:.1f}ms)')
+            self._warn(self._last_detection_match_note, 1.0)
+            return None
+        return best
+
+    def _check_synced_stamps(self, rgb_msg, depth_msg, rgb_info, depth_info):
+        meta = {}
+        rgb_depth_dt = self._stamp_delta_sec(rgb_msg.header.stamp, depth_msg.header.stamp)
+        rgb_info_dt = self._stamp_delta_sec(rgb_msg.header.stamp, rgb_info.header.stamp)
+        depth_info_dt = self._stamp_delta_sec(depth_msg.header.stamp, depth_info.header.stamp)
+
+        if rgb_depth_dt is not None:
+            meta['rgb_depth_dt_sec'] = rgb_depth_dt
+            if rgb_depth_dt > self.max_rgb_depth_dt_sec:
+                self._warn(
+                    f'RGB/depth stamp mismatch: dt={rgb_depth_dt * 1000.0:.1f}ms',
+                    1.0)
+                meta['skip_rgb_depth_dt'] = self.skip_on_large_rgb_depth_dt
+        if rgb_info_dt is not None:
+            meta['rgb_info_dt_sec'] = rgb_info_dt
+            if rgb_info_dt > self.max_info_image_dt_sec:
+                self._warn(
+                    f'RGB image/CameraInfo stamp mismatch: '
+                    f'dt={rgb_info_dt * 1000.0:.1f}ms',
+                    2.0)
+        if depth_info_dt is not None:
+            meta['depth_info_dt_sec'] = depth_info_dt
+            if depth_info_dt > self.max_info_image_dt_sec:
+                self._warn(
+                    f'Depth image/CameraInfo stamp mismatch: '
+                    f'dt={depth_info_dt * 1000.0:.1f}ms',
+                    2.0)
+        return meta
+
+    @staticmethod
+    def _stamp_is_zero(stamp):
+        return stamp.sec == 0 and stamp.nanosec == 0
+
+    @staticmethod
+    def _stamp_to_sec(stamp):
+        return float(stamp.sec) + float(stamp.nanosec) * 1e-9
+
+    def _stamp_delta_sec(self, stamp_a, stamp_b):
+        if self._stamp_is_zero(stamp_a) or self._stamp_is_zero(stamp_b):
+            return None
+        return abs(self._stamp_to_sec(stamp_a) - self._stamp_to_sec(stamp_b))
+
+    @staticmethod
+    def _format_dt_ms(dt_sec):
+        if dt_sec is None:
+            return 'n/a'
+        return f'{dt_sec * 1000.0:.1f}ms'
 
     def _select_detection(self, detections):
         cands = []
@@ -296,19 +570,31 @@ class ZedTargetCenterNode(Node):
             return max(cands, key=self._bbox_area)
         return max(cands, key=lambda d: d.confidence)
 
-    def _estimate_target(self, det, rgb, depth_m, rgb_info):
+    def _estimate_target(self, det, rgb, depth_m, rgb_info, cam_frame, image_stamp, tf_result):
         h, w = rgb.shape[:2]
         mask, bbox = self._build_mask_and_bbox(det, h, w)
-        if bbox is None or not self._bbox_size_ok(bbox):
+        if bbox is None:
+            self._set_estimate_failure('bad bbox')
+            return None
+        if not self._bbox_size_ok(bbox):
+            self._set_estimate_failure('bad bbox', bbox=bbox, overlay_mask=mask)
+            return None
+        if self.reject_bbox_touching_border and self._bbox_touches_border(bbox, w, h):
+            self._warn('bbox touches image border; rejecting target.', 2.0)
+            self._set_estimate_failure('border reject', bbox=bbox, overlay_mask=mask)
             return None
 
         if self.preset.target_mode == 'hole':
-            return self._estimate_hole_target(det, mask, bbox, depth_m, rgb_info, h, w)
+            return self._estimate_hole_target(
+                det, mask, bbox, depth_m, rgb_info, h, w, cam_frame, image_stamp,
+                tf_result)
         if self.preset.target_mode == 'top_surface':
             return self._estimate_surface_target(
-                det, mask, bbox, depth_m, rgb_info, h, w, use_top_percentile=True)
+                det, mask, bbox, depth_m, rgb_info, h, w, cam_frame, image_stamp,
+                tf_result, use_top_percentile=True)
         return self._estimate_surface_target(
-            det, mask, bbox, depth_m, rgb_info, h, w, use_top_percentile=False)
+            det, mask, bbox, depth_m, rgb_info, h, w, cam_frame, image_stamp, tf_result,
+            use_top_percentile=False)
 
     def _estimate_surface_target(
         self,
@@ -319,6 +605,9 @@ class ZedTargetCenterNode(Node):
         rgb_info,
         h,
         w,
+        cam_frame,
+        image_stamp,
+        tf_result,
         use_top_percentile=False,
     ):
         center_uv = self._surface_center(det, mask, bbox, w, h)
@@ -335,7 +624,13 @@ class ZedTargetCenterNode(Node):
             us, vs, z = self._window_valid_depth(center_uv, depth_m)
         if z.size < min_pts:
             self._warn(f'valid depth points {z.size} < min {min_pts}; skipping.', 2.0)
+            self._set_estimate_failure(
+                'no valid depth',
+                bbox=bbox,
+                overlay_mask=region,
+                meta={'depth_point_count': int(z.size)})
             return None
+        depth_point_count = int(z.size)
 
         if use_top_percentile and z.size >= self.plane_fit_min_points:
             thr = np.percentile(z, self.top_depth_percentile)
@@ -344,33 +639,87 @@ class ZedTargetCenterNode(Node):
                 us = us[keep]
                 vs = vs[keep]
                 z = z[keep]
+                depth_point_count = int(z.size)
 
+        plane_residual = None
+        plane_inliers = 0
+        normal_rejected = False
         if use_top_percentile and self.use_plane_fit and z.size >= self.plane_fit_min_points:
             pts = self._backproject_pixels(us, vs, z, rgb_info)
             plane = self._fit_plane_robust(pts)
             if plane is not None:
                 n, d, mean_resid, n_in = plane
+                plane_residual = mean_resid
+                plane_inliers = n_in
                 resid_ok = (self.plane_max_mean_residual_m <= 0.0 or
                             mean_resid <= self.plane_max_mean_residual_m)
                 if n_in >= self.plane_fit_min_points and resid_ok:
-                    center = self._ray_plane_intersect(center_uv[0], center_uv[1], n, d, rgb_info)
-                    if center is not None:
-                        return center, center_uv, bbox, region, 'plane'
+                    normal_ok = self._plane_normal_gate_accepts(
+                        n, cam_frame, image_stamp, tf_result)
+                    if normal_ok:
+                        center = self._ray_plane_intersect(
+                            center_uv[0], center_uv[1], n, d, rgb_info)
+                        if center is not None:
+                            return TargetEstimate(
+                                center_cam=center,
+                                center_uv=center_uv,
+                                bbox=bbox,
+                                overlay_mask=region,
+                                method='plane',
+                                plane_residual=plane_residual,
+                                plane_inliers=plane_inliers,
+                                depth_point_count=depth_point_count,
+                                normal_rejected=False)
+                    else:
+                        normal_rejected = True
 
         percentile = self.top_depth_percentile if use_top_percentile else self.surface_depth_percentile
         z_est = float(np.percentile(z, percentile))
         center = self._backproject_single(center_uv[0], center_uv[1], z_est, rgb_info)
-        return center, center_uv, bbox, region, 'depth_percentile'
+        method = 'top_depth_percentile' if use_top_percentile else 'depth_percentile'
+        return TargetEstimate(
+            center_cam=center,
+            center_uv=center_uv,
+            bbox=bbox,
+            overlay_mask=region,
+            method=method,
+            plane_residual=plane_residual,
+            plane_inliers=plane_inliers,
+            depth_point_count=depth_point_count,
+            normal_rejected=normal_rejected)
 
-    def _estimate_hole_target(self, det, mask, bbox, depth_m, rgb_info, h, w):
+    def _estimate_hole_target(
+        self,
+        det,
+        mask,
+        bbox,
+        depth_m,
+        rgb_info,
+        h,
+        w,
+        cam_frame,
+        image_stamp,
+        tf_result,
+    ):
         ellipse = self._ellipse_from_detection(mask, bbox)
         center_uv = self._select_center_pixel(det, ellipse, bbox, w, h)
         mask_limit = mask if self.intersect_ring_with_mask else None
         ring = self._build_ellipse_ring_mask(ellipse, h, w, mask_limit)
-        center = self._estimate_center_3d_from_ring(center_uv, ring, depth_m, rgb_info)
-        if center is None:
+        result = self._estimate_center_3d_from_ring(
+            center_uv, ring, depth_m, rgb_info, cam_frame, image_stamp, tf_result)
+        if result is None:
             return None
-        return center, center_uv, bbox, ring, 'ring_plane_or_median'
+        center, method, plane_residual, plane_inliers, depth_point_count, normal_rejected = result
+        return TargetEstimate(
+            center_cam=center,
+            center_uv=center_uv,
+            bbox=bbox,
+            overlay_mask=ring,
+            method=method,
+            plane_residual=plane_residual,
+            plane_inliers=plane_inliers,
+            depth_point_count=depth_point_count,
+            normal_rejected=normal_rejected)
 
     def _surface_center(self, det, mask, bbox, w, h):
         if self.use_detector_center:
@@ -474,6 +823,24 @@ class ZedTargetCenterNode(Node):
             self._warn(f'bbox {bw}x{bh} out of range; skipping.', 2.0)
         return ok
 
+    def _bbox_touches_border(self, bbox, w, h):
+        margin = max(0, int(self.border_margin_px))
+        x1, y1, x2, y2 = bbox
+        return (
+            x1 <= margin or
+            y1 <= margin or
+            x2 >= w - margin or
+            y2 >= h - margin
+        )
+
+    def _set_estimate_failure(self, reason, bbox=None, overlay_mask=None, meta=None):
+        self._last_estimate_failure = {
+            'reason': reason,
+            'bbox': bbox,
+            'overlay_mask': overlay_mask,
+            'meta': meta or {},
+        }
+
     @staticmethod
     def _bbox_area(det):
         if len(det.bbox) != 4:
@@ -546,9 +913,19 @@ class ZedTargetCenterNode(Node):
             ring = cv2.bitwise_and(ring, mask_limit)
         return ring
 
-    def _estimate_center_3d_from_ring(self, center_uv, ring_mask, depth_m, rgb_info):
+    def _estimate_center_3d_from_ring(
+        self,
+        center_uv,
+        ring_mask,
+        depth_m,
+        rgb_info,
+        cam_frame,
+        image_stamp,
+        tf_result,
+    ):
         vs, us = np.where(ring_mask > 0)
         if us.size == 0:
+            self._set_estimate_failure('empty ring mask', overlay_mask=ring_mask)
             return None
         z = depth_m[vs, us]
         valid = (z >= self.min_depth_m) & (z <= self.max_depth_m)
@@ -560,7 +937,12 @@ class ZedTargetCenterNode(Node):
                 f'ring valid depth points {z.size} < min {self.min_ring_valid_points}; '
                 'skipping.',
                 2.0)
+            self._set_estimate_failure(
+                'no valid ring depth',
+                overlay_mask=ring_mask,
+                meta={'depth_point_count': int(z.size)})
             return None
+        depth_point_count = int(z.size)
 
         if z.size >= self.plane_fit_min_points:
             thr = np.percentile(z, self.rim_depth_percentile)
@@ -569,23 +951,59 @@ class ZedTargetCenterNode(Node):
                 us = us[near]
                 vs = vs[near]
                 z = z[near]
+                depth_point_count = int(z.size)
 
+        plane_residual = None
+        plane_inliers = 0
+        normal_rejected = False
         if self.use_plane_fit and z.size >= self.plane_fit_min_points:
             pts = self._backproject_pixels(us, vs, z, rgb_info)
             plane = self._fit_plane_robust(pts)
             if plane is not None:
                 n, d, mean_resid, n_in = plane
+                plane_residual = mean_resid
+                plane_inliers = n_in
                 resid_ok = (self.plane_max_mean_residual_m <= 0.0 or
                             mean_resid <= self.plane_max_mean_residual_m)
                 if n_in >= self.plane_fit_min_points and resid_ok:
-                    center = self._ray_plane_intersect(center_uv[0], center_uv[1], n, d, rgb_info)
-                    if center is not None:
-                        return center
+                    normal_ok = self._plane_normal_gate_accepts(
+                        n, cam_frame, image_stamp, tf_result)
+                    if normal_ok:
+                        center = self._ray_plane_intersect(
+                            center_uv[0], center_uv[1], n, d, rgb_info)
+                        if center is not None:
+                            return (
+                                center,
+                                'ring_plane',
+                                plane_residual,
+                                plane_inliers,
+                                depth_point_count,
+                                False,
+                            )
+                    else:
+                        normal_rejected = True
 
         z_med = float(np.median(z))
         if not (self.min_depth_m <= z_med <= self.max_depth_m):
+            self._set_estimate_failure(
+                'ring median depth out of range',
+                overlay_mask=ring_mask,
+                meta={
+                    'depth_point_count': depth_point_count,
+                    'plane_residual': plane_residual,
+                    'plane_inliers': plane_inliers,
+                    'normal_rejected': normal_rejected,
+                })
             return None
-        return self._backproject_single(center_uv[0], center_uv[1], z_med, rgb_info)
+        center = self._backproject_single(center_uv[0], center_uv[1], z_med, rgb_info)
+        return (
+            center,
+            'ring_median',
+            plane_residual,
+            plane_inliers,
+            depth_point_count,
+            normal_rejected,
+        )
 
     def _depth_msg_to_meters(self, depth_msg):
         depth = self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding='passthrough')
@@ -593,7 +1011,9 @@ class ZedTargetCenterNode(Node):
             depth = depth[:, :, 0]
         enc = depth_msg.encoding
         if enc in ('16UC1', 'mono16'):
+            invalid = np.isin(depth, list(self.invalid_depth_values))
             depth_m = depth.astype(np.float32) * 0.001
+            depth_m[invalid] = 0.0
         elif enc == '32FC1':
             depth_m = depth.astype(np.float32)
         else:
@@ -603,8 +1023,9 @@ class ZedTargetCenterNode(Node):
         depth_m[depth_m <= 0.0] = 0.0
         return depth_m
 
-    def _lookup_tf(self, cam_frame, stamp):
-        stamp_is_zero = (stamp.sec == 0 and stamp.nanosec == 0)
+    def _lookup_tf(self, cam_frame, stamp, target_frame=None):
+        target_frame = target_frame or self.base_frame
+        stamp_is_zero = self._stamp_is_zero(stamp)
         try:
             stamp_time = Time.from_msg(stamp)
             future_sec = (stamp_time.nanoseconds - self.get_clock().now().nanoseconds) * 1e-9
@@ -614,43 +1035,173 @@ class ZedTargetCenterNode(Node):
             stamp_is_zero = True
 
         if self.tf_lookup_mode == 'latest' or stamp_is_zero:
-            return self._lookup_latest_tf(cam_frame)
+            return self._lookup_latest_tf(cam_frame, target_frame, mode='latest')
 
         if future_sec > self.max_future_stamp_sec:
             self._warn(
                 f'{cam_frame} stamp is {future_sec:.3f}s in the future; using latest TF.',
                 2.0)
             if self.allow_latest_tf_fallback:
-                return self._lookup_latest_tf(cam_frame)
+                return self._lookup_latest_tf(cam_frame, target_frame, mode='latest_fallback')
             return None
 
         try:
-            return self.tf_buffer.lookup_transform(
-                self.base_frame,
+            tf = self.tf_buffer.lookup_transform(
+                target_frame,
                 cam_frame,
                 stamp_time,
                 timeout=Duration(seconds=self.tf_timeout_sec))
+            return TfLookupResult(tf, 'stamped')
         except (tf2_ros.LookupException,
                 tf2_ros.ConnectivityException,
                 tf2_ros.ExtrapolationException) as exc:
             if self.tf_lookup_mode == 'stamped_then_latest' and self.allow_latest_tf_fallback:
                 self._warn(f'Stamped TF failed: {exc}; using latest.', 2.0)
-                return self._lookup_latest_tf(cam_frame)
-            self._warn(f'TF {cam_frame} -> {self.base_frame} failed: {exc}', 5.0)
+                return self._lookup_latest_tf(
+                    cam_frame, target_frame, mode='latest_fallback')
+            self._warn(f'TF {cam_frame} -> {target_frame} failed: {exc}', 5.0)
             return None
 
-    def _lookup_latest_tf(self, cam_frame):
+    def _lookup_latest_tf(self, cam_frame, target_frame=None, mode='latest'):
+        target_frame = target_frame or self.base_frame
         try:
-            return self.tf_buffer.lookup_transform(
-                self.base_frame,
+            tf = self.tf_buffer.lookup_transform(
+                target_frame,
                 cam_frame,
                 Time(),
                 timeout=Duration(seconds=self.tf_timeout_sec))
+            return TfLookupResult(tf, mode)
         except (tf2_ros.LookupException,
                 tf2_ros.ConnectivityException,
                 tf2_ros.ExtrapolationException) as exc:
-            self._warn(f'Latest TF {cam_frame} -> {self.base_frame} failed: {exc}', 5.0)
+            self._warn(f'Latest TF {cam_frame} -> {target_frame} failed: {exc}', 5.0)
             return None
+
+    def _plane_normal_gate_accepts(self, normal_cam, cam_frame, image_stamp, tf_result):
+        if not self.plane_normal_gating_enable:
+            return True
+
+        ref_frame = self.plane_normal_reference_frame or self.base_frame
+        normal_tf = None
+        if ref_frame == self.base_frame and tf_result is not None:
+            normal_tf = tf_result
+        else:
+            normal_tf = self._lookup_tf(cam_frame, image_stamp, target_frame=ref_frame)
+
+        if normal_tf is None:
+            self._warn(
+                f'Plane normal gate could not lookup {cam_frame} -> {ref_frame}; '
+                'using depth fallback.',
+                2.0)
+            return False
+
+        q = normal_tf.transform.transform.rotation
+        rot = self._quat_to_matrix(q.x, q.y, q.z, q.w)
+        n_ref = rot @ np.asarray(normal_cam, dtype=np.float64).reshape(3)
+        norm = np.linalg.norm(n_ref)
+        if norm < 1e-9:
+            return False
+        n_ref = n_ref / norm
+        dot = abs(float(np.dot(n_ref, self.plane_normal_reference_axis)))
+        if dot < self.plane_normal_min_abs_dot:
+            self._warn(
+                f'Plane normal rejected: abs(dot)={dot:.3f} < '
+                f'{self.plane_normal_min_abs_dot:.3f}',
+                1.0)
+            return False
+        return True
+
+    @staticmethod
+    def _quat_to_matrix(x, y, z, w):
+        xx = x * x
+        yy = y * y
+        zz = z * z
+        xy = x * y
+        xz = x * z
+        yz = y * z
+        wx = w * x
+        wy = w * y
+        wz = w * z
+        return np.array([
+            [1.0 - 2.0 * (yy + zz), 2.0 * (xy - wz), 2.0 * (xz + wy)],
+            [2.0 * (xy + wz), 1.0 - 2.0 * (xx + zz), 2.0 * (yz - wx)],
+            [2.0 * (xz - wy), 2.0 * (yz + wx), 1.0 - 2.0 * (xx + yy)],
+        ], dtype=np.float64)
+
+    def _smooth_pose_candidate(self, candidate):
+        if not self.temporal_smoothing_enable:
+            return candidate.center_base, {
+                'smoothing': 'raw smoothing_off',
+                'raw_smoothed_delta_m': 0.0,
+                'temporal_observations': 1,
+            }
+
+        now_sec = self.get_clock().now().nanoseconds * 1e-9
+        stamp_sec = candidate.stamp_sec if candidate.stamp_sec > 0.0 else now_sec
+        self._pose_history.append((stamp_sec, candidate))
+
+        while (
+            self._pose_history and
+            stamp_sec - self._pose_history[0][0] > self.temporal_window_sec
+        ):
+            self._pose_history.popleft()
+
+        items = [
+            (item_stamp, item)
+            for item_stamp, item in self._pose_history
+            if (
+                item.target_class == candidate.target_class and
+                abs(stamp_sec - item_stamp) <= self.temporal_window_sec
+            )
+        ]
+
+        cluster = []
+        center = candidate.center_base.astype(np.float64)
+        for _, item in sorted(items, key=lambda pair: pair[1].confidence, reverse=True):
+            if np.linalg.norm(item.center_base - center) > self.temporal_position_gate_m:
+                continue
+            cluster.append(item)
+            weights = np.asarray(
+                [max(1e-3, c.confidence) for c in cluster],
+                dtype=np.float64)
+            points = np.asarray([c.center_base for c in cluster], dtype=np.float64)
+            center = np.average(points, axis=0, weights=weights)
+
+        obs_count = len(cluster)
+        if obs_count < self.temporal_min_observations:
+            if self.require_temporal_min_observations:
+                self._warn(
+                    f'Waiting for stable {candidate.target_class} target: '
+                    f'{obs_count}/{self.temporal_min_observations} observations.',
+                    1.0)
+                return None
+            return candidate.center_base, {
+                'smoothing': (
+                    f'raw temporal_obs={obs_count}/'
+                    f'{self.temporal_min_observations}'),
+                'raw_smoothed_delta_m': 0.0,
+                'temporal_observations': obs_count,
+            }
+
+        weights = np.asarray([max(1e-3, c.confidence) for c in cluster], dtype=np.float64)
+        points = np.asarray([c.center_base for c in cluster], dtype=np.float64)
+        smoothed = np.average(points, axis=0, weights=weights)
+        diff = float(np.linalg.norm(smoothed - candidate.center_base))
+        return smoothed, {
+            'smoothing': f'smoothed n={obs_count} diff={diff:.4f}m',
+            'raw_smoothed_delta_m': diff,
+            'temporal_observations': obs_count,
+        }
+
+    @staticmethod
+    def _estimate_debug_meta(estimate):
+        return {
+            'method': estimate.method,
+            'plane_residual': estimate.plane_residual,
+            'plane_inliers': estimate.plane_inliers,
+            'depth_point_count': estimate.depth_point_count,
+            'normal_rejected': estimate.normal_rejected,
+        }
 
     def _transform_point(self, point_cam, cam_frame, tf, stamp):
         pt = PointStamped()
@@ -671,7 +1222,17 @@ class ZedTargetCenterNode(Node):
             return image_stamp
         return self.get_clock().now().to_msg()
 
-    def _publish_debug(self, rgb_msg, rgb, bbox, overlay_mask, success, text, center_uv=None):
+    def _publish_debug(
+        self,
+        rgb_msg,
+        rgb,
+        bbox,
+        overlay_mask,
+        success,
+        text,
+        center_uv=None,
+        meta=None,
+    ):
         if self.pub_debug is None:
             return
         if rgb is None:
@@ -691,15 +1252,70 @@ class ZedTargetCenterNode(Node):
             u, v = int(round(center_uv[0])), int(round(center_uv[1]))
             cv2.drawMarker(dbg, (u, v), (0, 255, 255), markerType=cv2.MARKER_CROSS,
                            markerSize=14, thickness=2)
-        cv2.putText(dbg, f'{self.target_class}: {text}', (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0) if success else (0, 0, 255),
-                    2, cv2.LINE_AA)
+
+        lines = self._debug_lines(success, text, meta or {})
+        color = (0, 255, 0) if success else (0, 0, 255)
+        y = 24
+        for idx, line in enumerate(lines):
+            line_color = color if idx == 0 else (255, 255, 255)
+            cv2.putText(dbg, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.48,
+                        (0, 0, 0), 2, cv2.LINE_AA)
+            cv2.putText(dbg, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.48,
+                        line_color, 1, cv2.LINE_AA)
+            y += 18
         try:
             out = self.bridge.cv2_to_imgmsg(dbg, encoding='bgr8')
             out.header = rgb_msg.header
             self.pub_debug.publish(out)
         except Exception as exc:  # noqa: BLE001
             self._warn(f'debug image publish failed: {exc}', 5.0)
+
+    def _debug_lines(self, success, text, meta):
+        status = 'OK' if success else 'FAIL'
+        lines = [f'{self.target_class}: {status} {text}']
+
+        method = meta.get('method')
+        if method and method != text:
+            lines.append(f'method={method}')
+
+        det_dt = self._format_dt_ms(meta.get('detection_dt_sec'))
+        det_note = meta.get('detection_match', '')
+        if det_dt != 'n/a':
+            lines.append(f'detection-image dt={det_dt}')
+        elif det_note:
+            lines.append(det_note)
+
+        tf_mode = meta.get('tf_mode')
+        if tf_mode:
+            lines.append(f'tf={tf_mode}')
+
+        smoothing = meta.get('smoothing')
+        if smoothing:
+            lines.append(smoothing)
+
+        residual = meta.get('plane_residual')
+        inliers = meta.get('plane_inliers')
+        if residual is not None:
+            lines.append(f'plane resid={float(residual):.4f} inliers={int(inliers or 0)}')
+        elif inliers:
+            lines.append(f'plane inliers={int(inliers)}')
+
+        depth_points = meta.get('depth_point_count')
+        if depth_points:
+            lines.append(f'depth pts={int(depth_points)}')
+
+        if meta.get('normal_rejected'):
+            lines.append('plane_normal_rejected')
+
+        depth_encoding = meta.get('depth_encoding')
+        if depth_encoding:
+            lines.append(f'depth={depth_encoding}')
+
+        rgb_depth_dt = meta.get('rgb_depth_dt_sec')
+        if rgb_depth_dt is not None:
+            lines.append(f'rgb-depth dt={rgb_depth_dt * 1000.0:.1f}ms')
+
+        return lines[:9]
 
     def _warn(self, msg, throttle_sec):
         try:

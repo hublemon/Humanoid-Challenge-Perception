@@ -1,0 +1,47 @@
+FROM ros2_jazzy_robotis_perception:latest
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PIP_NO_CACHE_DIR=0
+
+RUN apt update && apt install -y \
+    python3-pip \
+    python3-opencv \
+    build-essential \
+    cmake \
+    pkg-config \
+    libglib2.0-0 \
+    libgl1 \
+    libgomp1 \
+    libjpeg-dev \
+    zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# pip 기본 도구 업데이트
+RUN python3 -m pip install --break-system-packages --upgrade pip setuptools wheel
+
+# Debian/apt로 설치된 PyYAML을 pip가 uninstall하려다 실패하는 문제 방지
+RUN python3 -m pip install --break-system-packages --ignore-installed PyYAML==6.0.2
+
+# PaddlePaddle 먼저 설치
+RUN python3 -m pip install --break-system-packages \
+    paddlepaddle==3.1.1
+
+# PaddleOCR 설치
+# PyYAML은 Debian 패키지를 건드리지 않고 pip 버전으로 덮어쓰기
+RUN python3 -m pip install --break-system-packages --ignore-installed PyYAML \
+    paddleocr==3.1.0
+
+# 보조 패키지
+RUN python3 -m pip install --break-system-packages \
+    shapely \
+    pyclipper \
+    scikit-image \
+    lmdb
+
+ENV OMP_NUM_THREADS=1
+ENV OPENBLAS_NUM_THREADS=1
+ENV MKL_NUM_THREADS=1
+ENV NUMEXPR_NUM_THREADS=1
+ENV FLAGS_allocator_strategy=auto_growth
+
+WORKDIR /ws

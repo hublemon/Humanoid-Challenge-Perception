@@ -13,7 +13,7 @@ from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
 
 
-DEFAULT_TOPIC = "/zed/zed_node/rgb/image_rect_color"
+DEFAULT_TOPIC = "/perception/wrist/target_debug_image"
 
 
 class ZedRgbImageSaver(Node):

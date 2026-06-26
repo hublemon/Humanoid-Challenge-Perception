@@ -1,0 +1,413 @@
+#0 building with "default" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile.ocr
+#1 transferring dockerfile: 726B done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/ros2_jazzy_robotis_perception:latest
+#2 DONE 0.0s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 2B done
+#3 DONE 0.0s
+
+#4 [1/4] FROM docker.io/library/ros2_jazzy_robotis_perception:latest@sha256:99807962e84809fb21d70364bdeb0c22ebdc5b61a6a6a876d1b4370a5aa73283
+#4 resolve docker.io/library/ros2_jazzy_robotis_perception:latest@sha256:99807962e84809fb21d70364bdeb0c22ebdc5b61a6a6a876d1b4370a5aa73283 done
+#4 CACHED
+
+#5 [2/4] RUN apt update && apt install -y     python3-pip     python3-opencv     libglib2.0-0     libgl1     && rm -rf /var/lib/apt/lists/*
+#5 0.125 
+#5 0.125 WARNING: apt does not have a stable CLI interface. Use with caution in scripts.
+#5 0.125 
+#5 0.823 Get:1 http://archive.ubuntu.com/ubuntu noble InRelease [256 kB]
+#5 0.840 Get:2 http://security.ubuntu.com/ubuntu noble-security InRelease [126 kB]
+#5 1.572 Get:3 http://packages.ros.org/ros2/ubuntu noble InRelease [4676 B]
+#5 1.653 Get:4 http://security.ubuntu.com/ubuntu noble-security/multiverse amd64 Packages [43.8 kB]
+#5 1.763 Get:5 http://security.ubuntu.com/ubuntu noble-security/universe amd64 Packages [1487 kB]
+#5 1.848 Get:6 http://packages.ros.org/ros2/ubuntu noble/main Sources [2081 kB]
+#5 2.105 Get:7 http://archive.ubuntu.com/ubuntu noble-updates InRelease [126 kB]
+#5 2.105 Get:8 http://security.ubuntu.com/ubuntu noble-security/restricted amd64 Packages [1339 kB]
+#5 2.180 Get:9 http://security.ubuntu.com/ubuntu noble-security/main amd64 Packages [976 kB]
+#5 3.085 Get:10 http://archive.ubuntu.com/ubuntu noble-backports InRelease [126 kB]
+#5 3.198 Get:11 http://archive.ubuntu.com/ubuntu noble/restricted amd64 Packages [117 kB]
+#5 3.230 Get:12 http://archive.ubuntu.com/ubuntu noble/universe amd64 Packages [19.3 MB]
+#5 4.203 Get:13 http://archive.ubuntu.com/ubuntu noble/main amd64 Packages [1808 kB]
+#5 4.253 Get:14 http://archive.ubuntu.com/ubuntu noble/multiverse amd64 Packages [331 kB]
+#5 4.264 Get:15 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 Packages [1296 kB]
+#5 4.284 Get:16 http://archive.ubuntu.com/ubuntu noble-updates/multiverse amd64 Packages [49.5 kB]
+#5 4.284 Get:17 http://archive.ubuntu.com/ubuntu noble-updates/restricted amd64 Packages [1412 kB]
+#5 4.314 Get:18 http://archive.ubuntu.com/ubuntu noble-updates/universe amd64 Packages [2108 kB]
+#5 4.405 Get:19 http://archive.ubuntu.com/ubuntu noble-backports/universe amd64 Packages [35.9 kB]
+#5 4.405 Get:20 http://archive.ubuntu.com/ubuntu noble-backports/main amd64 Packages [48.9 kB]
+#5 4.405 Get:21 http://archive.ubuntu.com/ubuntu noble-backports/multiverse amd64 Packages [671 B]
+#5 7.928 Get:22 http://packages.ros.org/ros2/ubuntu noble/main amd64 Packages [1956 kB]
+#5 9.859 Fetched 35.0 MB in 10s (3610 kB/s)
+#5 9.859 Reading package lists...
+#5 10.61 Building dependency tree...
+#5 10.80 Reading state information...
+#5 10.82 212 packages can be upgraded. Run 'apt list --upgradable' to see them.
+#5 10.82 
+#5 10.82 WARNING: apt does not have a stable CLI interface. Use with caution in scripts.
+#5 10.82 
+#5 10.83 Reading package lists...
+#5 11.56 Building dependency tree...
+#5 11.75 Reading state information...
+#5 11.96 python3-pip is already the newest version (24.0+dfsg-1ubuntu1.3).
+#5 11.96 python3-opencv is already the newest version (4.6.0+dfsg-13.1ubuntu1).
+#5 11.96 libglib2.0-0t64 is already the newest version (2.80.0-6ubuntu3.8).
+#5 11.96 libglib2.0-0t64 set to manually installed.
+#5 11.96 libgl1 is already the newest version (1.7.0-1build1).
+#5 11.96 libgl1 set to manually installed.
+#5 11.96 0 upgraded, 0 newly installed, 0 to remove and 212 not upgraded.
+#5 DONE 12.0s
+
+#6 [3/4] RUN python3 -m pip install --break-system-packages     paddlepaddle     paddleocr     shapely     pyclipper     scikit-image     imgaug     lmdb
+#6 0.676 Collecting paddlepaddle
+#6 0.793   Downloading paddlepaddle-3.3.1-cp312-cp312-manylinux1_x86_64.whl.metadata (8.8 kB)
+#6 0.844 Collecting paddleocr
+#6 0.857   Downloading paddleocr-3.7.0-py3-none-any.whl.metadata (28 kB)
+#6 0.974 Collecting shapely
+#6 0.992   Downloading shapely-2.1.2-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (6.8 kB)
+#6 1.045 Collecting pyclipper
+#6 1.056   Downloading pyclipper-1.4.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (8.6 kB)
+#6 1.137 Collecting scikit-image
+#6 1.160   Downloading scikit_image-0.26.0-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl.metadata (15 kB)
+#6 1.185 Collecting imgaug
+#6 1.199   Downloading imgaug-0.4.0-py2.py3-none-any.whl.metadata (1.8 kB)
+#6 1.263 Collecting lmdb
+#6 1.300   Downloading lmdb-2.2.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (1.2 kB)
+#6 1.341 Collecting httpx (from paddlepaddle)
+#6 1.354   Downloading httpx-0.28.1-py3-none-any.whl.metadata (7.1 kB)
+#6 1.356 Requirement already satisfied: numpy>=1.21 in /usr/lib/python3/dist-packages (from paddlepaddle) (1.26.4)
+#6 1.571 Collecting protobuf>=3.20.2 (from paddlepaddle)
+#6 1.586   Downloading protobuf-7.35.1-cp310-abi3-manylinux2014_x86_64.whl.metadata (595 bytes)
+#6 1.829 Collecting Pillow (from paddlepaddle)
+#6 1.854   Downloading pillow-12.2.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl.metadata (8.8 kB)
+#6 1.884 Collecting opt_einsum==3.3.0 (from paddlepaddle)
+#6 1.910   Downloading opt_einsum-3.3.0-py3-none-any.whl.metadata (6.5 kB)
+#6 1.969 Collecting networkx (from paddlepaddle)
+#6 1.983   Downloading networkx-3.6.1-py3-none-any.whl.metadata (6.8 kB)
+#6 2.018 Collecting typing_extensions (from paddlepaddle)
+#6 2.030   Downloading typing_extensions-4.15.0-py3-none-any.whl.metadata (3.3 kB)
+#6 2.235 Collecting safetensors>=0.6.0 (from paddlepaddle)
+#6 2.253   Downloading safetensors-0.8.0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (4.2 kB)
+#6 2.256 Requirement already satisfied: setuptools in /usr/lib/python3/dist-packages (from paddlepaddle) (68.1.2)
+#6 2.298 Collecting paddlex<3.8.0,>=3.7.0 (from paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 2.321   Downloading paddlex-3.7.2-py3-none-any.whl.metadata (80 kB)
+#6 2.355      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 80.7/80.7 kB 2.7 MB/s eta 0:00:00
+#6 2.360 Requirement already satisfied: PyYAML>=6 in /usr/lib/python3/dist-packages (from paddleocr) (6.0.1)
+#6 2.445 Collecting requests (from paddleocr)
+#6 2.467   Downloading requests-2.34.2-py3-none-any.whl.metadata (4.8 kB)
+#6 3.116 Collecting aiohttp>=3.8.0 (from paddleocr)
+#6 3.143   Downloading aiohttp-3.14.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (8.3 kB)
+#6 3.385 Collecting scipy>=1.11.4 (from scikit-image)
+#6 3.398   Downloading scipy-1.18.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl.metadata (62 kB)
+#6 3.403      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 62.3/62.3 kB 12.3 MB/s eta 0:00:00
+#6 3.458 Collecting imageio!=2.35.0,>=2.33 (from scikit-image)
+#6 3.471   Downloading imageio-2.37.3-py3-none-any.whl.metadata (9.7 kB)
+#6 3.626 Collecting tifffile>=2022.8.12 (from scikit-image)
+#6 3.659   Downloading tifffile-2026.6.1-py3-none-any.whl.metadata (33 kB)
+#6 3.663 Requirement already satisfied: packaging>=21 in /usr/lib/python3/dist-packages (from scikit-image) (24.0)
+#6 3.742 Collecting lazy-loader>=0.4 (from scikit-image)
+#6 3.768   Downloading lazy_loader-0.5-py3-none-any.whl.metadata (5.9 kB)
+#6 3.773 Requirement already satisfied: six in /usr/lib/python3/dist-packages (from imgaug) (1.16.0)
+#6 3.980 Collecting matplotlib (from imgaug)
+#6 3.993   Downloading matplotlib-3.11.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (80 kB)
+#6 3.994      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 80.3/80.3 kB 466.1 MB/s eta 0:00:00
+#6 4.097 Collecting opencv-python (from imgaug)
+#6 4.112   Downloading opencv_python-4.13.0.92-cp37-abi3-manylinux_2_28_x86_64.whl.metadata (19 kB)
+#6 4.155 Collecting aiohappyeyeballs>=2.5.0 (from aiohttp>=3.8.0->paddleocr)
+#6 4.176   Downloading aiohappyeyeballs-2.6.2-py3-none-any.whl.metadata (5.9 kB)
+#6 4.225 Collecting aiosignal>=1.4.0 (from aiohttp>=3.8.0->paddleocr)
+#6 4.276   Downloading aiosignal-1.4.0-py3-none-any.whl.metadata (3.7 kB)
+#6 4.308 Collecting attrs>=17.3.0 (from aiohttp>=3.8.0->paddleocr)
+#6 4.343   Downloading attrs-26.1.0-py3-none-any.whl.metadata (8.8 kB)
+#6 4.491 Collecting frozenlist>=1.1.1 (from aiohttp>=3.8.0->paddleocr)
+#6 4.517   Downloading frozenlist-1.8.0-cp312-cp312-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl.metadata (20 kB)
+#6 4.796 Collecting multidict<7.0,>=4.5 (from aiohttp>=3.8.0->paddleocr)
+#6 4.811   Downloading multidict-6.7.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (5.3 kB)
+#6 4.970 Collecting propcache>=0.2.0 (from aiohttp>=3.8.0->paddleocr)
+#6 5.006   Downloading propcache-0.5.2-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (16 kB)
+#6 5.354 Collecting yarl<2.0,>=1.17.0 (from aiohttp>=3.8.0->paddleocr)
+#6 5.397   Downloading yarl-1.24.2-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (94 kB)
+#6 5.421      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 94.2/94.2 kB 203.9 MB/s eta 0:00:00
+#6 5.567 Collecting aistudio-sdk>=0.3.5 (from paddlex<3.8.0,>=3.7.0->paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 5.584   Downloading aistudio_sdk-0.3.8-py3-none-any.whl.metadata (1.1 kB)
+#6 5.627 Collecting chardet (from paddlex<3.8.0,>=3.7.0->paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 5.648   Downloading chardet-7.4.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (9.4 kB)
+#6 5.743 Collecting colorlog (from paddlex<3.8.0,>=3.7.0->paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 5.764   Downloading colorlog-6.10.1-py3-none-any.whl.metadata (11 kB)
+#6 5.799 Collecting filelock (from paddlex<3.8.0,>=3.7.0->paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 5.836   Downloading filelock-3.29.4-py3-none-any.whl.metadata (2.0 kB)
+#6 5.907 Collecting huggingface-hub (from paddlex<3.8.0,>=3.7.0->paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 5.921   Downloading huggingface_hub-1.21.0-py3-none-any.whl.metadata (14 kB)
+#6 5.960 Collecting modelscope>=1.28.0 (from paddlex<3.8.0,>=3.7.0->paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 6.008   Downloading modelscope-1.37.1-py3-none-any.whl.metadata (43 kB)
+#6 6.010      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 43.5/43.5 kB 408.9 MB/s eta 0:00:00
+#6 6.199 Collecting pandas>=1.3 (from paddlex<3.8.0,>=3.7.0->paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 6.210   Downloading pandas-3.0.3-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl.metadata (79 kB)
+#6 6.231      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 79.5/79.5 kB 3.5 MB/s eta 0:00:00
+#6 6.274 Collecting prettytable (from paddlex<3.8.0,>=3.7.0->paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 6.295   Downloading prettytable-3.18.0-py3-none-any.whl.metadata (37 kB)
+#6 6.325 Collecting py-cpuinfo (from paddlex<3.8.0,>=3.7.0->paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 6.373   Downloading py_cpuinfo-9.0.0-py3-none-any.whl.metadata (794 bytes)
+#6 6.665 Collecting pydantic>=2 (from paddlex<3.8.0,>=3.7.0->paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 6.687   Downloading pydantic-2.13.4-py3-none-any.whl.metadata (109 kB)
+#6 6.689      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 109.4/109.4 kB 426.0 MB/s eta 0:00:00
+#6 6.763 Collecting PyYAML>=6 (from paddleocr)
+#6 6.778   Downloading PyYAML-6.0.2-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (2.1 kB)
+#6 7.020 Collecting ruamel.yaml (from paddlex<3.8.0,>=3.7.0->paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 7.046   Downloading ruamel_yaml-0.19.1-py3-none-any.whl.metadata (16 kB)
+#6 7.132 Collecting ujson (from paddlex<3.8.0,>=3.7.0->paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 7.157   Downloading ujson-5.13.0-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl.metadata (10.0 kB)
+#6 7.249 Collecting imagesize (from paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 7.264   Downloading imagesize-2.0.0-py2.py3-none-any.whl.metadata (1.5 kB)
+#6 7.347 Collecting opencv-contrib-python==4.10.0.84 (from paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 7.372   Downloading opencv_contrib_python-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (20 kB)
+#6 7.567 Collecting pypdfium2>=4 (from paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 7.599   Downloading pypdfium2-5.10.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (70 kB)
+#6 7.660      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 70.3/70.3 kB 1.0 MB/s eta 0:00:00
+#6 7.868 Collecting python-bidi (from paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 7.884   Downloading python_bidi-0.6.10-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (5.3 kB)
+#6 8.389 Collecting numpy>=1.21 (from paddlepaddle)
+#6 8.397   Downloading numpy-2.3.5-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl.metadata (62 kB)
+#6 8.410      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 62.1/62.1 kB 4.9 MB/s eta 0:00:00
+#6 8.506 Collecting anyio (from httpx->paddlepaddle)
+#6 8.533   Downloading anyio-4.14.1-py3-none-any.whl.metadata (4.6 kB)
+#6 8.570 Collecting certifi (from httpx->paddlepaddle)
+#6 8.596   Downloading certifi-2026.6.17-py3-none-any.whl.metadata (2.5 kB)
+#6 8.644 Collecting httpcore==1.* (from httpx->paddlepaddle)
+#6 8.663   Downloading httpcore-1.0.9-py3-none-any.whl.metadata (21 kB)
+#6 8.690 Collecting idna (from httpx->paddlepaddle)
+#6 8.711   Downloading idna-3.18-py3-none-any.whl.metadata (6.1 kB)
+#6 8.754 Collecting h11>=0.16 (from httpcore==1.*->httpx->paddlepaddle)
+#6 8.783   Downloading h11-0.16.0-py3-none-any.whl.metadata (8.3 kB)
+#6 8.998 Collecting contourpy>=1.0.1 (from matplotlib->imgaug)
+#6 9.069   Downloading contourpy-1.3.3-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl.metadata (5.5 kB)
+#6 9.099 Collecting cycler>=0.10 (from matplotlib->imgaug)
+#6 9.128   Downloading cycler-0.12.1-py3-none-any.whl.metadata (3.8 kB)
+#6 9.338 Collecting fonttools>=4.22.0 (from matplotlib->imgaug)
+#6 9.356   Downloading fonttools-4.63.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (118 kB)
+#6 9.376      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 118.7/118.7 kB 5.9 MB/s eta 0:00:00
+#6 9.537 Collecting kiwisolver>=1.3.1 (from matplotlib->imgaug)
+#6 9.548   Downloading kiwisolver-1.5.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (5.1 kB)
+#6 9.579 Requirement already satisfied: pyparsing>=3 in /usr/lib/python3/dist-packages (from matplotlib->imgaug) (3.1.1)
+#6 9.580 Requirement already satisfied: python-dateutil>=2.7 in /usr/lib/python3/dist-packages (from matplotlib->imgaug) (2.8.2)
+#6 9.789 Collecting charset_normalizer<4,>=2 (from requests->paddleocr)
+#6 9.814   Downloading charset_normalizer-3.4.7-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (40 kB)
+#6 9.816      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 40.9/40.9 kB 385.2 MB/s eta 0:00:00
+#6 9.917 Collecting urllib3<3,>=1.26 (from requests->paddleocr)
+#6 9.936   Downloading urllib3-2.7.0-py3-none-any.whl.metadata (6.9 kB)
+#6 9.962 Requirement already satisfied: psutil in /usr/lib/python3/dist-packages (from aistudio-sdk>=0.3.5->paddlex<3.8.0,>=3.7.0->paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr) (5.9.8)
+#6 10.02 Collecting tqdm (from aistudio-sdk>=0.3.5->paddlex<3.8.0,>=3.7.0->paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 10.10   Downloading tqdm-4.68.3-py3-none-any.whl.metadata (57 kB)
+#6 10.10      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 57.4/57.4 kB 411.9 MB/s eta 0:00:00
+#6 10.16 Collecting bce-python-sdk (from aistudio-sdk>=0.3.5->paddlex<3.8.0,>=3.7.0->paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 10.18   Downloading bce_python_sdk-0.9.72-py3-none-any.whl.metadata (449 bytes)
+#6 10.21 Collecting click (from aistudio-sdk>=0.3.5->paddlex<3.8.0,>=3.7.0->paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 10.23   Downloading click-8.4.2-py3-none-any.whl.metadata (2.6 kB)
+#6 10.59 Collecting annotated-types>=0.6.0 (from pydantic>=2->paddlex<3.8.0,>=3.7.0->paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 10.63   Downloading annotated_types-0.7.0-py3-none-any.whl.metadata (15 kB)
+#6 11.57 Collecting pydantic-core==2.46.4 (from pydantic>=2->paddlex<3.8.0,>=3.7.0->paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 11.59   Downloading pydantic_core-2.46.4-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (6.6 kB)
+#6 11.62 Collecting typing-inspection>=0.4.2 (from pydantic>=2->paddlex<3.8.0,>=3.7.0->paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 11.65   Downloading typing_inspection-0.4.2-py3-none-any.whl.metadata (2.6 kB)
+#6 11.81 Collecting fsspec>=2023.5.0 (from huggingface-hub->paddlex<3.8.0,>=3.7.0->paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 11.82   Downloading fsspec-2026.6.0-py3-none-any.whl.metadata (10 kB)
+#6 11.87 Collecting hf-xet<2.0.0,>=1.5.1 (from huggingface-hub->paddlex<3.8.0,>=3.7.0->paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 11.88   Downloading hf_xet-1.5.1-cp37-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl.metadata (4.9 kB)
+#6 11.93 Collecting typer<0.26.0,>=0.20.0 (from huggingface-hub->paddlex<3.8.0,>=3.7.0->paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 11.95   Downloading typer-0.25.1-py3-none-any.whl.metadata (15 kB)
+#6 12.01 Collecting wcwidth>=0.3.5 (from prettytable->paddlex<3.8.0,>=3.7.0->paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 12.04   Downloading wcwidth-0.8.1-py3-none-any.whl.metadata (43 kB)
+#6 12.04      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 43.1/43.1 kB 399.4 MB/s eta 0:00:00
+#6 12.22 Collecting shellingham>=1.3.0 (from typer<0.26.0,>=0.20.0->huggingface-hub->paddlex<3.8.0,>=3.7.0->paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 12.26   Downloading shellingham-1.5.4-py2.py3-none-any.whl.metadata (3.5 kB)
+#6 12.33 Collecting rich>=13.8.0 (from typer<0.26.0,>=0.20.0->huggingface-hub->paddlex<3.8.0,>=3.7.0->paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 12.35   Downloading rich-15.0.0-py3-none-any.whl.metadata (18 kB)
+#6 12.37 Collecting annotated-doc>=0.0.2 (from typer<0.26.0,>=0.20.0->huggingface-hub->paddlex<3.8.0,>=3.7.0->paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 12.38   Downloading annotated_doc-0.0.4-py3-none-any.whl.metadata (6.6 kB)
+#6 12.55 Collecting pycryptodome>=3.8.0 (from bce-python-sdk->aistudio-sdk>=0.3.5->paddlex<3.8.0,>=3.7.0->paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 12.58   Downloading pycryptodome-3.23.0-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (3.4 kB)
+#6 12.60 Collecting future>=0.6.0 (from bce-python-sdk->aistudio-sdk>=0.3.5->paddlex<3.8.0,>=3.7.0->paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 12.62   Downloading future-1.0.0-py3-none-any.whl.metadata (4.0 kB)
+#6 12.80 Collecting crc32c>=2.2.post0 (from bce-python-sdk->aistudio-sdk>=0.3.5->paddlex<3.8.0,>=3.7.0->paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 12.81   Downloading crc32c-2.8-cp312-cp312-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl.metadata (7.8 kB)
+#6 12.89 Collecting markdown-it-py>=2.2.0 (from rich>=13.8.0->typer<0.26.0,>=0.20.0->huggingface-hub->paddlex<3.8.0,>=3.7.0->paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 12.91   Downloading markdown_it_py-4.2.0-py3-none-any.whl.metadata (7.4 kB)
+#6 12.92 Requirement already satisfied: pygments<3.0.0,>=2.13.0 in /usr/lib/python3/dist-packages (from rich>=13.8.0->typer<0.26.0,>=0.20.0->huggingface-hub->paddlex<3.8.0,>=3.7.0->paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr) (2.17.2)
+#6 12.97 Collecting mdurl~=0.1 (from markdown-it-py>=2.2.0->rich>=13.8.0->typer<0.26.0,>=0.20.0->huggingface-hub->paddlex<3.8.0,>=3.7.0->paddlex[ocr-core]<3.8.0,>=3.7.0->paddleocr)
+#6 12.99   Downloading mdurl-0.1.2-py3-none-any.whl.metadata (1.6 kB)
+#6 13.03 Downloading paddlepaddle-3.3.1-cp312-cp312-manylinux1_x86_64.whl (194.8 MB)
+#6 35.14    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 194.8/194.8 MB 6.1 MB/s eta 0:00:00
+#6 35.16 Downloading opt_einsum-3.3.0-py3-none-any.whl (65 kB)
+#6 35.17    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 65.5/65.5 kB 7.1 MB/s eta 0:00:00
+#6 35.19 Downloading paddleocr-3.7.0-py3-none-any.whl (146 kB)
+#6 35.20    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 146.8/146.8 kB 16.4 MB/s eta 0:00:00
+#6 35.22 Downloading shapely-2.1.2-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (3.1 MB)
+#6 35.62    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.1/3.1 MB 7.7 MB/s eta 0:00:00
+#6 35.65 Downloading pyclipper-1.4.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (978 kB)
+#6 35.78    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 978.2/978.2 kB 7.7 MB/s eta 0:00:00
+#6 35.79 Downloading scikit_image-0.26.0-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl (13.6 MB)
+#6 37.80    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 13.6/13.6 MB 7.5 MB/s eta 0:00:00
+#6 37.82 Downloading imgaug-0.4.0-py2.py3-none-any.whl (948 kB)
+#6 37.98    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 948.0/948.0 kB 6.0 MB/s eta 0:00:00
+#6 37.99 Downloading lmdb-2.2.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (338 kB)
+#6 38.03    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 338.3/338.3 kB 9.7 MB/s eta 0:00:00
+#6 38.05 Downloading aiohttp-3.14.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (1.8 MB)
+#6 38.26    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.8/1.8 MB 8.3 MB/s eta 0:00:00
+#6 38.27 Downloading imageio-2.37.3-py3-none-any.whl (317 kB)
+#6 38.38    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 317.6/317.6 kB 3.1 MB/s eta 0:00:00
+#6 38.39 Downloading lazy_loader-0.5-py3-none-any.whl (8.0 kB)
+#6 38.43 Downloading networkx-3.6.1-py3-none-any.whl (2.1 MB)
+#6 38.61    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.1/2.1 MB 11.5 MB/s eta 0:00:00
+#6 38.63 Downloading paddlex-3.7.2-py3-none-any.whl (2.2 MB)
+#6 38.84    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.2/2.2 MB 10.6 MB/s eta 0:00:00
+#6 38.85 Downloading PyYAML-6.0.2-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (767 kB)
+#6 38.94    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 767.5/767.5 kB 8.9 MB/s eta 0:00:00
+#6 38.96 Downloading opencv_contrib_python-4.10.0.84-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (68.7 MB)
+#6 46.01    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 68.7/68.7 MB 8.0 MB/s eta 0:00:00
+#6 46.03 Downloading pillow-12.2.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (7.1 MB)
+#6 47.02    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 7.1/7.1 MB 7.2 MB/s eta 0:00:00
+#6 47.03 Downloading protobuf-7.35.1-cp310-abi3-manylinux2014_x86_64.whl (327 kB)
+#6 47.06    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 327.1/327.1 kB 9.8 MB/s eta 0:00:00
+#6 47.08 Downloading safetensors-0.8.0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (516 kB)
+#6 47.23    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 516.0/516.0 kB 3.4 MB/s eta 0:00:00
+#6 47.25 Downloading scipy-1.18.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (35.3 MB)
+#6 51.97    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 35.3/35.3 MB 8.7 MB/s eta 0:00:00
+#6 51.98 Downloading numpy-2.3.5-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (16.6 MB)
+#6 54.34    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 16.6/16.6 MB 7.4 MB/s eta 0:00:00
+#6 54.36 Downloading tifffile-2026.6.1-py3-none-any.whl (267 kB)
+#6 54.38    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 267.1/267.1 kB 11.1 MB/s eta 0:00:00
+#6 54.40 Downloading typing_extensions-4.15.0-py3-none-any.whl (44 kB)
+#6 54.40    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 44.6/44.6 kB 417.8 MB/s eta 0:00:00
+#6 54.41 Downloading httpx-0.28.1-py3-none-any.whl (73 kB)
+#6 54.46    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 73.5/73.5 kB 1.5 MB/s eta 0:00:00
+#6 54.47 Downloading httpcore-1.0.9-py3-none-any.whl (78 kB)
+#6 54.48    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 78.8/78.8 kB 5.8 MB/s eta 0:00:00
+#6 54.50 Downloading matplotlib-3.11.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (10.0 MB)
+#6 56.45    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 10.0/10.0 MB 5.1 MB/s eta 0:00:00
+#6 56.46 Downloading opencv_python-4.13.0.92-cp37-abi3-manylinux_2_28_x86_64.whl (72.9 MB)
+#6 65.72    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 72.9/72.9 MB 7.2 MB/s eta 0:00:00
+#6 65.73 Downloading requests-2.34.2-py3-none-any.whl (73 kB)
+#6 65.74    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 73.1/73.1 kB 221.4 MB/s eta 0:00:00
+#6 65.75 Downloading aiohappyeyeballs-2.6.2-py3-none-any.whl (15 kB)
+#6 65.77 Downloading aiosignal-1.4.0-py3-none-any.whl (7.5 kB)
+#6 65.79 Downloading aistudio_sdk-0.3.8-py3-none-any.whl (62 kB)
+#6 65.79    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 63.0/63.0 kB 439.9 MB/s eta 0:00:00
+#6 65.81 Downloading attrs-26.1.0-py3-none-any.whl (67 kB)
+#6 65.88    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 67.5/67.5 kB 935.6 kB/s eta 0:00:00
+#6 65.90 Downloading certifi-2026.6.17-py3-none-any.whl (133 kB)
+#6 65.90    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 133.3/133.3 kB 27.0 MB/s eta 0:00:00
+#6 65.93 Downloading charset_normalizer-3.4.7-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (216 kB)
+#6 65.96    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 216.6/216.6 kB 8.0 MB/s eta 0:00:00
+#6 65.98 Downloading contourpy-1.3.3-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl (362 kB)
+#6 66.02    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 362.6/362.6 kB 10.8 MB/s eta 0:00:00
+#6 66.04 Downloading cycler-0.12.1-py3-none-any.whl (8.3 kB)
+#6 66.05 Downloading fonttools-4.63.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (5.0 MB)
+#6 66.80    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 5.0/5.0 MB 6.7 MB/s eta 0:00:00
+#6 66.82 Downloading frozenlist-1.8.0-cp312-cp312-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl (242 kB)
+#6 66.84    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 242.4/242.4 kB 12.0 MB/s eta 0:00:00
+#6 66.85 Downloading idna-3.18-py3-none-any.whl (65 kB)
+#6 66.86    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 65.5/65.5 kB 5.9 MB/s eta 0:00:00
+#6 66.87 Downloading kiwisolver-1.5.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (1.5 MB)
+#6 67.04    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.5/1.5 MB 8.8 MB/s eta 0:00:00
+#6 67.05 Downloading modelscope-1.37.1-py3-none-any.whl (6.1 MB)
+#6 67.90    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 6.1/6.1 MB 7.2 MB/s eta 0:00:00
+#6 67.92 Downloading multidict-6.7.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (256 kB)
+#6 67.96    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 256.3/256.3 kB 8.0 MB/s eta 0:00:00
+#6 67.97 Downloading pandas-3.0.3-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl (10.9 MB)
+#6 69.51    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 10.9/10.9 MB 7.0 MB/s eta 0:00:00
+#6 69.52 Downloading propcache-0.5.2-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (61 kB)
+#6 69.53    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 61.6/61.6 kB 6.8 MB/s eta 0:00:00
+#6 69.56 Downloading pydantic-2.13.4-py3-none-any.whl (472 kB)
+#6 69.62    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 472.3/472.3 kB 8.1 MB/s eta 0:00:00
+#6 69.64 Downloading pydantic_core-2.46.4-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (2.1 MB)
+#6 69.99    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.1/2.1 MB 6.0 MB/s eta 0:00:00
+#6 70.01 Downloading pypdfium2-5.10.1-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (3.7 MB)
+#6 70.47    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 3.7/3.7 MB 8.1 MB/s eta 0:00:00
+#6 70.49 Downloading urllib3-2.7.0-py3-none-any.whl (131 kB)
+#6 70.49    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 131.1/131.1 kB 565.5 MB/s eta 0:00:00
+#6 70.51 Downloading yarl-1.24.2-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (105 kB)
+#6 70.52    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 105.6/105.6 kB 9.1 MB/s eta 0:00:00
+#6 70.54 Downloading anyio-4.14.1-py3-none-any.whl (124 kB)
+#6 70.55    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 124.9/124.9 kB 15.4 MB/s eta 0:00:00
+#6 70.57 Downloading chardet-7.4.3-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (888 kB)
+#6 70.69    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 888.3/888.3 kB 7.3 MB/s eta 0:00:00
+#6 70.70 Downloading colorlog-6.10.1-py3-none-any.whl (11 kB)
+#6 70.72 Downloading filelock-3.29.4-py3-none-any.whl (42 kB)
+#6 70.72    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 42.8/42.8 kB 375.4 MB/s eta 0:00:00
+#6 70.74 Downloading huggingface_hub-1.21.0-py3-none-any.whl (721 kB)
+#6 70.82    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 721.1/721.1 kB 9.3 MB/s eta 0:00:00
+#6 70.85 Downloading imagesize-2.0.0-py2.py3-none-any.whl (9.4 kB)
+#6 70.87 Downloading prettytable-3.18.0-py3-none-any.whl (37 kB)
+#6 70.88 Downloading py_cpuinfo-9.0.0-py3-none-any.whl (22 kB)
+#6 70.90 Downloading python_bidi-0.6.10-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (299 kB)
+#6 70.94    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 299.6/299.6 kB 8.0 MB/s eta 0:00:00
+#6 70.96 Downloading ruamel_yaml-0.19.1-py3-none-any.whl (118 kB)
+#6 70.96    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 118.1/118.1 kB 25.0 MB/s eta 0:00:00
+#6 70.98 Downloading ujson-5.13.0-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl (57 kB)
+#6 70.98    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 57.9/57.9 kB 38.0 MB/s eta 0:00:00
+#6 71.01 Downloading annotated_types-0.7.0-py3-none-any.whl (13 kB)
+#6 71.04 Downloading click-8.4.2-py3-none-any.whl (119 kB)
+#6 71.04    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 119.2/119.2 kB 556.8 MB/s eta 0:00:00
+#6 71.05 Downloading fsspec-2026.6.0-py3-none-any.whl (203 kB)
+#6 71.07    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 203.9/203.9 kB 18.2 MB/s eta 0:00:00
+#6 71.08 Downloading h11-0.16.0-py3-none-any.whl (37 kB)
+#6 71.10 Downloading hf_xet-1.5.1-cp37-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl (4.5 MB)
+#6 71.84    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 4.5/4.5 MB 6.1 MB/s eta 0:00:00
+#6 71.85 Downloading tqdm-4.68.3-py3-none-any.whl (78 kB)
+#6 71.86    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 78.3/78.3 kB 14.7 MB/s eta 0:00:00
+#6 71.88 Downloading typer-0.25.1-py3-none-any.whl (58 kB)
+#6 71.89    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 58.4/58.4 kB 13.7 MB/s eta 0:00:00
+#6 71.90 Downloading typing_inspection-0.4.2-py3-none-any.whl (14 kB)
+#6 71.93 Downloading wcwidth-0.8.1-py3-none-any.whl (323 kB)
+#6 71.99    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 323.1/323.1 kB 6.1 MB/s eta 0:00:00
+#6 72.02 Downloading bce_python_sdk-0.9.72-py3-none-any.whl (417 kB)
+#6 72.11    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 417.8/417.8 kB 4.8 MB/s eta 0:00:00
+#6 72.13 Downloading annotated_doc-0.0.4-py3-none-any.whl (5.3 kB)
+#6 72.15 Downloading crc32c-2.8-cp312-cp312-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl (80 kB)
+#6 72.17    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 80.0/80.0 kB 5.9 MB/s eta 0:00:00
+#6 72.19 Downloading future-1.0.0-py3-none-any.whl (491 kB)
+#6 72.26    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 491.3/491.3 kB 6.4 MB/s eta 0:00:00
+#6 72.30 Downloading pycryptodome-3.23.0-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (2.3 MB)
+#6 72.66    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.3/2.3 MB 6.2 MB/s eta 0:00:00
+#6 72.68 Downloading rich-15.0.0-py3-none-any.whl (310 kB)
+#6 72.71    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 310.7/310.7 kB 13.1 MB/s eta 0:00:00
+#6 72.74 Downloading shellingham-1.5.4-py2.py3-none-any.whl (9.8 kB)
+#6 72.76 Downloading markdown_it_py-4.2.0-py3-none-any.whl (91 kB)
+#6 72.77    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 91.7/91.7 kB 13.6 MB/s eta 0:00:00
+#6 72.80 Downloading mdurl-0.1.2-py3-none-any.whl (10.0 kB)
+#6 74.43 Installing collected packages: py-cpuinfo, wcwidth, urllib3, ujson, typing_extensions, tqdm, shellingham, safetensors, ruamel.yaml, PyYAML, python-bidi, pypdfium2, pycryptodome, pyclipper, protobuf, propcache, Pillow, numpy, networkx, multidict, mdurl, lmdb, lazy-loader, kiwisolver, imagesize, idna, hf-xet, h11, future, fsspec, frozenlist, fonttools, filelock, cycler, crc32c, colorlog, click, charset_normalizer, chardet, certifi, attrs, annotated-types, annotated-doc, aiohappyeyeballs, yarl, typing-inspection, tifffile, shapely, scipy, requests, pydantic-core, prettytable, pandas, opt_einsum, opencv-python, opencv-contrib-python, markdown-it-py, imageio, httpcore, contourpy, bce-python-sdk, anyio, aiosignal, scikit-image, rich, pydantic, modelscope, matplotlib, httpx, aistudio-sdk, aiohttp, typer, paddlepaddle, imgaug, huggingface-hub, paddlex, paddleocr
+#6 74.88   Attempting uninstall: PyYAML
+#6 74.89     Found existing installation: PyYAML 6.0.1
+#6 74.89 ERROR: Cannot uninstall PyYAML 6.0.1, RECORD file not found. Hint: The package was installed by debian.
+#6 ERROR: process "/bin/sh -c python3 -m pip install --break-system-packages     paddlepaddle     paddleocr     shapely     pyclipper     scikit-image     imgaug     lmdb" did not complete successfully: exit code: 1
+------
+ > [3/4] RUN python3 -m pip install --break-system-packages     paddlepaddle     paddleocr     shapely     pyclipper     scikit-image     imgaug     lmdb:
+72.11    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 417.8/417.8 kB 4.8 MB/s eta 0:00:00
+
+72.30 Downloading pycryptodome-3.23.0-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (2.3 MB)
+72.66    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.3/2.3 MB 6.2 MB/s eta 0:00:00
+
+72.80 Downloading mdurl-0.1.2-py3-none-any.whl (10.0 kB)
+74.43 Installing collected packages: py-cpuinfo, wcwidth, urllib3, ujson, typing_extensions, tqdm, shellingham, safetensors, ruamel.yaml, PyYAML, python-bidi, pypdfium2, pycryptodome, pyclipper, protobuf, propcache, Pillow, numpy, networkx, multidict, mdurl, lmdb, lazy-loader, kiwisolver, imagesize, idna, hf-xet, h11, future, fsspec, frozenlist, fonttools, filelock, cycler, crc32c, colorlog, click, charset_normalizer, chardet, certifi, attrs, annotated-types, annotated-doc, aiohappyeyeballs, yarl, typing-inspection, tifffile, shapely, scipy, requests, pydantic-core, prettytable, pandas, opt_einsum, opencv-python, opencv-contrib-python, markdown-it-py, imageio, httpcore, contourpy, bce-python-sdk, anyio, aiosignal, scikit-image, rich, pydantic, modelscope, matplotlib, httpx, aistudio-sdk, aiohttp, typer, paddlepaddle, imgaug, huggingface-hub, paddlex, paddleocr
+74.88   Attempting uninstall: PyYAML
+74.89     Found existing installation: PyYAML 6.0.1
+74.89 ERROR: Cannot uninstall PyYAML 6.0.1, RECORD file not found. Hint: The package was installed by debian.
+------
+WARNING: current commit information was not captured by the build: failed to read current commit information with git rev-parse --is-inside-work-tree
+Dockerfile.ocr:14
+--------------------
+  13 |     # 필요 버전은 현재 환경에 맞춰 고정하는 게 좋음
+  14 | >>> RUN python3 -m pip install --break-system-packages \
+  15 | >>>     paddlepaddle \
+  16 | >>>     paddleocr \
+  17 | >>>     shapely \
+  18 | >>>     pyclipper \
+  19 | >>>     scikit-image \
+  20 | >>>     imgaug \
+  21 | >>>     lmdb
+  22 |     
+--------------------
+ERROR: failed to build: failed to solve: process "/bin/sh -c python3 -m pip install --break-system-packages     paddlepaddle     paddleocr     shapely     pyclipper     scikit-image     imgaug     lmdb" did not complete successfully: exit code: 1

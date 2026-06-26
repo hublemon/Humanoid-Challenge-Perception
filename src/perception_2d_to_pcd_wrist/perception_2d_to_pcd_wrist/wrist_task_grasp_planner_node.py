@@ -8,6 +8,7 @@ wrist_right detection 후보 중 confidence가 높고 팔 기준점에 가까운
 Publish:
 - /perception/wrist/target_one_pose : geometry_msgs/msg/PoseStamped
 - /perception/wrist/target_one_detection : std_msgs/msg/String JSON
+- /perception/wrist/all_object_poses : geometry_msgs/msg/PoseArray
 
 최종 3D target은 항상 wrist_right detection + wrist RGB-D에서 계산된다.
 """
@@ -30,7 +31,7 @@ from cv_bridge import CvBridge
 
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import String
-from geometry_msgs.msg import PointStamped, PoseStamped
+from geometry_msgs.msg import PointStamped, Pose, PoseArray, PoseStamped
 
 import tf2_ros
 from tf2_geometry_msgs import do_transform_point
@@ -46,6 +47,8 @@ class Candidate:
     bbox: Tuple[int, int, int, int]
     center_color: np.ndarray
     center_base: np.ndarray
+    center_uv: Tuple[float, float]
+    center_method: str
     stamp: object
     stamp_sec: float
     point_count: int
@@ -65,6 +68,14 @@ class RgbdFrame:
     depth_frame: str
 
 
+@dataclass
+class CenterEstimate:
+    center_color: np.ndarray
+    center_uv: Tuple[float, float]
+    point_count: int
+    method: str
+
+
 class WristTaskGraspPlannerNode(Node):
     def __init__(self) -> None:
         super().__init__('wrist_task_grasp_planner_node')
@@ -82,6 +93,8 @@ class WristTaskGraspPlannerNode(Node):
         )
         self.declare_parameter('debug_image_topic', '/perception/wrist/target_debug_image')
         self.declare_parameter('publish_debug_image', True)
+        self.declare_parameter('out_all_poses_topic', '/perception/wrist/all_object_poses')
+        self.declare_parameter('publish_all_object_poses', True)
 
         self.declare_parameter('base_frame', 'base_link')
         self.declare_parameter('rgb_frame', '')
@@ -136,14 +149,41 @@ class WristTaskGraspPlannerNode(Node):
         self.declare_parameter('robust_iqr_filter_enable', True)
         self.declare_parameter('robust_iqr_multiplier', 2.5)
 
+        # Grasp center estimation:
+        # - median: legacy visible-mask 3D median, useful for comparison.
+        # - ray_depth: fixed 2D center ray + near-depth percentile.
+        # - plane: robust plane first, ray_depth fallback.
+        # - auto: plane when reliable, otherwise ray_depth.
+        self.declare_parameter('center_strategy', 'auto')
+        self.declare_parameter('use_detector_center_for_grasp', True)
+        self.declare_parameter('center_max_offset_ratio', 0.45)
+        self.declare_parameter(
+            'grasp_center_ring_classes',
+            ['gear_ring', 'spacer_ring', 'flange_nut', 'hex_nut'],
+        )
+        self.declare_parameter('grasp_center_surface_classes', ['dome_nut'])
+        self.declare_parameter('center_depth_percentile', 35.0)
+        self.declare_parameter('center_inner_mask_erosion_px', 4)
+        self.declare_parameter('center_min_points', 20)
+        self.declare_parameter('center_use_plane_fit', True)
+        self.declare_parameter('center_plane_min_points', 20)
+        self.declare_parameter('center_plane_outlier_m', 0.015)
+        self.declare_parameter('center_plane_max_mean_residual_m', 0.012)
+        self.declare_parameter('center_ring_outer_scale', 0.86)
+        self.declare_parameter('center_ring_inner_scale', 0.32)
+        self.declare_parameter('center_intersect_ring_with_mask', True)
+        self.declare_parameter('center_top_face_circle_enable', True)
+        self.declare_parameter('center_top_face_z_band_m', 0.008)
+        self.declare_parameter('center_top_face_min_points', 25)
+
         self.declare_parameter('tray_roi', [0, 0, 0, 0])
         self.declare_parameter('require_inside_tray_roi', False)
 
         self.declare_parameter('arm_reference_frame', '')
         self.declare_parameter('arm_reference_xyz', [0.0, 0.0, 0.0])
         self.declare_parameter('max_arm_distance_m', 0.60)
-        self.declare_parameter('weight_confidence', 0.45)
-        self.declare_parameter('weight_arm_proximity', 0.55)
+        self.declare_parameter('weight_confidence', 1.00)
+        self.declare_parameter('weight_arm_proximity', 0.00)
 
         self.declare_parameter('sync_slop', 0.10)
         self.declare_parameter('sync_queue', 10)
@@ -152,7 +192,7 @@ class WristTaskGraspPlannerNode(Node):
         self.declare_parameter('temporal_smoothing_enable', True)
         self.declare_parameter('temporal_window_sec', 0.8)
         self.declare_parameter('temporal_min_observations', 2)
-        self.declare_parameter('temporal_position_gate_m', 0.06)
+        self.declare_parameter('temporal_position_gate_m', 0.10)
         self.declare_parameter('temporal_max_history', 50)
         self.declare_parameter('republish_last_pose_hz', 0.0)
         self.declare_parameter('hold_last_pose_sec', 2.0)
@@ -169,6 +209,8 @@ class WristTaskGraspPlannerNode(Node):
         self.out_target_detection_topic = gp('out_target_detection_topic').value
         self.debug_image_topic = gp('debug_image_topic').value
         self.publish_debug_image = bool(gp('publish_debug_image').value)
+        self.out_all_poses_topic = gp('out_all_poses_topic').value
+        self.publish_all_object_poses = bool(gp('publish_all_object_poses').value)
         self.declare_parameter('rgbd_history_size', 30)
         self.declare_parameter('max_detection_rgbd_dt_sec', 0.12)
 
@@ -207,6 +249,35 @@ class WristTaskGraspPlannerNode(Node):
         self.pixel_step = max(1, int(gp('pixel_step').value))
         self.robust_iqr_filter_enable = bool(gp('robust_iqr_filter_enable').value)
         self.robust_iqr_multiplier = float(gp('robust_iqr_multiplier').value)
+
+        self.center_strategy = str(gp('center_strategy').value).strip().lower()
+        if self.center_strategy not in {'median', 'ray_depth', 'plane', 'auto'}:
+            self.get_logger().warn(
+                f'Unknown center_strategy={self.center_strategy!r}; using auto.')
+            self.center_strategy = 'auto'
+        self.use_detector_center_for_grasp = bool(
+            gp('use_detector_center_for_grasp').value)
+        self.center_max_offset_ratio = float(gp('center_max_offset_ratio').value)
+        self.grasp_center_ring_classes = self._param_to_class_set(
+            gp('grasp_center_ring_classes').value)
+        self.grasp_center_surface_classes = self._param_to_class_set(
+            gp('grasp_center_surface_classes').value)
+        self.center_depth_percentile = float(gp('center_depth_percentile').value)
+        self.center_inner_mask_erosion_px = int(gp('center_inner_mask_erosion_px').value)
+        self.center_min_points = int(gp('center_min_points').value)
+        self.center_use_plane_fit = bool(gp('center_use_plane_fit').value)
+        self.center_plane_min_points = int(gp('center_plane_min_points').value)
+        self.center_plane_outlier_m = float(gp('center_plane_outlier_m').value)
+        self.center_plane_max_mean_residual_m = float(
+            gp('center_plane_max_mean_residual_m').value)
+        self.center_ring_outer_scale = float(gp('center_ring_outer_scale').value)
+        self.center_ring_inner_scale = float(gp('center_ring_inner_scale').value)
+        self.center_intersect_ring_with_mask = bool(
+            gp('center_intersect_ring_with_mask').value)
+        self.center_top_face_circle_enable = bool(
+            gp('center_top_face_circle_enable').value)
+        self.center_top_face_z_band_m = float(gp('center_top_face_z_band_m').value)
+        self.center_top_face_min_points = int(gp('center_top_face_min_points').value)
 
         self.tray_roi_param = [int(v) for v in gp('tray_roi').value]
         self.require_inside_tray_roi = bool(gp('require_inside_tray_roi').value)
@@ -267,6 +338,7 @@ class WristTaskGraspPlannerNode(Node):
             10,
         )
         self.pub_debug_image = self.create_publisher(Image, self.debug_image_topic, 10)
+        self.pub_all_poses = self.create_publisher(PoseArray, self.out_all_poses_topic, 10)
         self.republish_timer = None
         if self.republish_last_pose_hz > 0.0:
             self.republish_timer = self.create_timer(
@@ -304,6 +376,8 @@ class WristTaskGraspPlannerNode(Node):
             f'  out_pose={self.out_pose_topic} frame={self.base_frame}\n'
             f'  out_target_detection={self.out_target_detection_topic}\n'
             f'  debug_image={self.debug_image_topic} enabled={self.publish_debug_image}\n'
+            f'  all_object_poses={self.out_all_poses_topic} '
+            f'enabled={self.publish_all_object_poses}\n'
             f'  allow_all_without_task={self.allow_all_without_task}, '
             f'min_score={self.min_score_to_publish}\n'
             f'  temporal_smoothing={self.temporal_smoothing_enable} '
@@ -541,6 +615,8 @@ class WristTaskGraspPlannerNode(Node):
         selected=False,
         point_uv=None,
         center_label=None,
+        bbox_center_uv=None,
+        bbox_center_label='bbox',
     ) -> None:
         if img is None or bbox is None:
             return
@@ -574,6 +650,41 @@ class WristTaskGraspPlannerNode(Node):
         text_y = max(16, y1 - 6)
         cv2.putText(img, text, (x1, text_y), font, scale, (0, 0, 0), 2, cv2.LINE_AA)
         cv2.putText(img, text, (x1, text_y), font, scale, color, 1, cv2.LINE_AA)
+
+        if bbox_center_uv is not None:
+            bu, bv = bbox_center_uv
+            if 0 <= bu < w and 0 <= bv < h:
+                bbox_color = (255, 0, 255)
+                cv2.drawMarker(
+                    img,
+                    (bu, bv),
+                    bbox_color,
+                    markerType=cv2.MARKER_DIAMOND,
+                    markerSize=10,
+                    thickness=1,
+                    line_type=cv2.LINE_AA,
+                )
+                if bbox_center_label:
+                    cv2.putText(
+                        img,
+                        str(bbox_center_label),
+                        (max(0, min(w - 1, bu + 5)), max(12, min(h - 4, bv + 5))),
+                        font,
+                        0.32,
+                        (0, 0, 0),
+                        2,
+                        cv2.LINE_AA,
+                    )
+                    cv2.putText(
+                        img,
+                        str(bbox_center_label),
+                        (max(0, min(w - 1, bu + 5)), max(12, min(h - 4, bv + 5))),
+                        font,
+                        0.32,
+                        bbox_color,
+                        1,
+                        cv2.LINE_AA,
+                    )
 
         if point_uv is None:
             return
@@ -623,6 +734,10 @@ class WristTaskGraspPlannerNode(Node):
             candidate = candidate_by_det_id.get(id(det))
             is_selected = selected_det_id is not None and id(det) == selected_det_id
             selected_drawn = selected_drawn or is_selected
+            bbox_center_uv = (
+                int(round((bbox[0] + bbox[2]) * 0.5)),
+                int(round((bbox[1] + bbox[3]) * 0.5)),
+            )
 
             if is_selected:
                 color = (0, 255, 0)
@@ -633,17 +748,23 @@ class WristTaskGraspPlannerNode(Node):
 
             label = f'{canonical} {float(getattr(det, "confidence", 0.0)):.2f}'
             if candidate is not None:
-                label += f' {candidate.score:.2f}'
+                label += f' {candidate.score:.2f} {candidate.center_method}'
 
             point_uv = None
             center_label = None
             if candidate is not None:
-                point_uv = self._project_color_point_to_pixel(candidate.center_color, frame.K_rgb)
+                point_uv = (
+                    int(round(candidate.center_uv[0])),
+                    int(round(candidate.center_uv[1])),
+                )
                 if is_selected:
                     p = candidate.center_base
+                    du = int(round(candidate.center_uv[0] - bbox_center_uv[0]))
+                    dv = int(round(candidate.center_uv[1] - bbox_center_uv[1]))
                     center_label = (
                         f'{candidate.canonical_class} '
-                        f'({p[0]:.2f},{p[1]:.2f},{p[2]:.2f})'
+                        f'({p[0]:.2f},{p[1]:.2f},{p[2]:.2f}) '
+                        f'{candidate.center_method} du={du:+d} dv={dv:+d}'
                     )
 
             self._draw_detection_overlay(
@@ -655,25 +776,39 @@ class WristTaskGraspPlannerNode(Node):
                 selected=is_selected,
                 point_uv=point_uv,
                 center_label=center_label,
+                bbox_center_uv=bbox_center_uv,
+                bbox_center_label='B=bbox',
             )
 
         if selected is not None and not selected_drawn:
-            point_uv = self._project_color_point_to_pixel(selected.center_color, frame.K_rgb)
+            point_uv = (
+                int(round(selected.center_uv[0])),
+                int(round(selected.center_uv[1])),
+            )
+            bbox_center_uv = (
+                int(round((selected.bbox[0] + selected.bbox[2]) * 0.5)),
+                int(round((selected.bbox[1] + selected.bbox[3]) * 0.5)),
+            )
             p = selected.center_base
+            du = int(round(selected.center_uv[0] - bbox_center_uv[0]))
+            dv = int(round(selected.center_uv[1] - bbox_center_uv[1]))
             center_label = (
                 f'{selected.canonical_class} '
-                f'({p[0]:.2f},{p[1]:.2f},{p[2]:.2f})'
+                f'({p[0]:.2f},{p[1]:.2f},{p[2]:.2f}) '
+                f'{selected.center_method} du={du:+d} dv={dv:+d}'
             )
             self._draw_detection_overlay(
                 debug_bgr,
                 selected.det,
                 selected.bbox,
                 f'{selected.canonical_class} {float(getattr(selected.det, "confidence", 0.0)):.2f} '
-                f'{selected.score:.2f}',
+                f'{selected.score:.2f} {selected.center_method}',
                 (0, 255, 0),
                 selected=True,
                 point_uv=point_uv,
                 center_label=center_label,
+                bbox_center_uv=bbox_center_uv,
+                bbox_center_label='B=bbox',
             )
 
         if selected is None and lines:
@@ -694,18 +829,22 @@ class WristTaskGraspPlannerNode(Node):
                     ['NO TARGET'],
                 )
                 self._publish_debug_image(debug_bgr, self.latest_depth_stamp, self.rgb_frame)
+            self._publish_all_object_pose_array([], self.latest_depth_stamp)
             return
 
         frame = self._select_rgbd_frame_for_detection(msg)
         if frame is None:
+            empty_stamp = None
             if self.publish_debug_image and self.rgbd_history:
                 fallback = self.rgbd_history[-1]
+                empty_stamp = fallback.stamp
                 debug_bgr = fallback.rgb.copy()
                 self._draw_text_block(
                     debug_bgr,
                     ['NO TARGET'],
                 )
                 self._publish_debug_image(debug_bgr, fallback.stamp, fallback.rgb_frame)
+            self._publish_all_object_pose_array([], empty_stamp)
             return
 
         self.latest_rgb = frame.rgb
@@ -746,23 +885,9 @@ class WristTaskGraspPlannerNode(Node):
                     'bbox': bbox,
                 })
 
-        if active_classes == set():
-            self.get_logger().warn(
-                f'No active task class from {self.task_topic}; not publishing target.',
-                throttle_duration_sec=5.0
-            )
-            self._publish_candidate_debug_image(
-                debug_bgr,
-                frame,
-                overlay_entries,
-                [],
-                None,
-                ['NO TARGET'],
-            )
-            return
-
         base_from_rgb_tf = self._lookup_base_from_rgb_tf(frame.stamp)
         if base_from_rgb_tf is None:
+            self._publish_all_object_pose_array([], frame.stamp)
             self._publish_candidate_debug_image(
                 debug_bgr,
                 frame,
@@ -789,6 +914,7 @@ class WristTaskGraspPlannerNode(Node):
                 'No valid depth points after range filtering.',
                 throttle_duration_sec=5.0
             )
+            self._publish_all_object_pose_array([], frame.stamp)
             self._publish_candidate_debug_image(
                 debug_bgr,
                 frame,
@@ -805,14 +931,12 @@ class WristTaskGraspPlannerNode(Node):
         pts_color = wr.transform_points(pts_depth, R, t)
         u_proj, v_proj = wr.project_to_image(pts_color, self.K_rgb)
 
-        candidates: List[Candidate] = []
+        valid_candidates: List[Candidate] = []
+        all_pose_candidates: List[Candidate] = []
+        task_candidates: List[Candidate] = []
 
         for det in wrist_dets:
             canonical = self._canonical_label(det.class_name)
-
-            if active_classes is not None and canonical not in active_classes:
-                debug_skips['not_active'] += 1
-                continue
 
             if float(det.confidence) < self.min_confidence:
                 debug_skips['low_conf'] += 1
@@ -840,21 +964,22 @@ class WristTaskGraspPlannerNode(Node):
                 if np.count_nonzero(mask) == 0:
                     mask = raw_mask
 
-            inside = wr.mask_membership(u_proj, v_proj, mask)
-            if not np.any(inside):
-                debug_skips['no_depth'] += 1
-                continue
-
-            sel = pts_color[inside]
-
-            if self.robust_iqr_filter_enable:
-                sel = self._robust_iqr_filter(sel)
-
-            if sel.shape[0] < self.min_candidate_points:
+            center_estimate = self._estimate_grasp_center_color(
+                det=det,
+                canonical=canonical,
+                bbox=bbox,
+                raw_mask=raw_mask,
+                work_mask=mask,
+                pts_color=pts_color,
+                u_proj=u_proj,
+                v_proj=v_proj,
+                image_shape=(rgb_h, rgb_w),
+            )
+            if center_estimate is None:
                 debug_skips['few_points'] += 1
                 continue
 
-            center_color = np.median(sel, axis=0)
+            center_color = center_estimate.center_color
             center_base = self._transform_np_by_tf(center_color, base_from_rgb_tf)
 
             metrics = self._compute_metrics_from_base(det, center_base)
@@ -864,20 +989,63 @@ class WristTaskGraspPlannerNode(Node):
 
             score = self._weighted_score(metrics)
 
-            candidates.append(Candidate(
+            candidate = Candidate(
                 det=det,
                 canonical_class=canonical,
                 bbox=bbox,
                 center_color=center_color,
                 center_base=center_base,
+                center_uv=center_estimate.center_uv,
+                center_method=center_estimate.method,
                 stamp=frame.stamp,
                 stamp_sec=frame.stamp_sec,
-                point_count=int(sel.shape[0]),
+                point_count=int(center_estimate.point_count),
                 score=score,
                 metrics=metrics,
-            ))
+            )
+            valid_candidates.append(candidate)
+            all_pose_candidates.append(candidate)
 
-        if not candidates:
+            if active_classes is None or canonical in active_classes:
+                task_candidates.append(candidate)
+            else:
+                debug_skips['not_active'] += 1
+
+        self._publish_all_object_pose_array(all_pose_candidates, frame.stamp)
+
+        if not valid_candidates:
+            self.get_logger().warn(
+                f'No valid wrist candidate after 3D filtering; '
+                f'total_detections={len(msg.detections)}, wrist_detections={len(wrist_dets)}, '
+                f'wrist_classes={wrist_classes}, skips={debug_skips}',
+                throttle_duration_sec=5.0
+            )
+            self._publish_candidate_debug_image(
+                debug_bgr,
+                frame,
+                overlay_entries,
+                valid_candidates,
+                None,
+                ['NO TARGET'],
+            )
+            return
+
+        if active_classes == set():
+            self.get_logger().warn(
+                f'No active task class from {self.task_topic}; not publishing target.',
+                throttle_duration_sec=5.0
+            )
+            self._publish_candidate_debug_image(
+                debug_bgr,
+                frame,
+                overlay_entries,
+                valid_candidates,
+                None,
+                ['NO TARGET'],
+            )
+            return
+
+        if not task_candidates:
             self.get_logger().warn(
                 f'No valid wrist candidate matched task classes: '
                 f'{sorted(active_classes) if active_classes is not None else "ALL"}; '
@@ -889,19 +1057,19 @@ class WristTaskGraspPlannerNode(Node):
                 debug_bgr,
                 frame,
                 overlay_entries,
-                candidates,
+                valid_candidates,
                 None,
                 ['NO TARGET'],
             )
             return
 
-        candidates.sort(key=lambda c: c.score, reverse=True)
-        raw_best = candidates[0]
+        task_candidates.sort(key=lambda c: c.score, reverse=True)
+        raw_best = task_candidates[0]
 
         if self.log_rankings:
-            self._log_candidates(candidates[:max(1, self.log_top_k)])
+            self._log_candidates(task_candidates[:max(1, self.log_top_k)])
 
-        best = self._select_stable_candidate(candidates)
+        best = self._select_stable_candidate(task_candidates)
         if best is None:
             self.get_logger().warn(
                 f'Waiting for stable target observation '
@@ -914,7 +1082,7 @@ class WristTaskGraspPlannerNode(Node):
                 debug_bgr,
                 frame,
                 overlay_entries,
-                candidates,
+                valid_candidates,
                 None,
                 ['NO TARGET'],
             )
@@ -930,7 +1098,7 @@ class WristTaskGraspPlannerNode(Node):
                 debug_bgr,
                 frame,
                 overlay_entries,
-                candidates,
+                valid_candidates,
                 None,
                 ['NO TARGET'],
             )
@@ -942,7 +1110,7 @@ class WristTaskGraspPlannerNode(Node):
                 debug_bgr,
                 frame,
                 overlay_entries,
-                candidates,
+                valid_candidates,
                 None,
                 ['NO TARGET'],
             )
@@ -965,7 +1133,7 @@ class WristTaskGraspPlannerNode(Node):
             debug_bgr,
             frame,
             overlay_entries,
-            candidates,
+            valid_candidates,
             best,
             [],
         )
@@ -1093,6 +1261,11 @@ class WristTaskGraspPlannerNode(Node):
             'source_camera': str(getattr(det, 'source_camera', '')),
             'score': float(candidate.score),
             'point_count': int(candidate.point_count),
+            'center_method': str(candidate.center_method),
+            'center_uv': {
+                'u': float(candidate.center_uv[0]),
+                'v': float(candidate.center_uv[1]),
+            },
             'metrics': {
                 key: float(value)
                 for key, value in candidate.metrics.items()
@@ -1182,6 +1355,477 @@ class WristTaskGraspPlannerNode(Node):
             return 0.0
 
         return self._clip01(acc / total_w)
+
+    # =====================================================================
+    # grasp center estimation
+    # =====================================================================
+    def _estimate_grasp_center_color(
+        self,
+        det,
+        canonical: str,
+        bbox: Tuple[int, int, int, int],
+        raw_mask: np.ndarray,
+        work_mask: np.ndarray,
+        pts_color: np.ndarray,
+        u_proj: np.ndarray,
+        v_proj: np.ndarray,
+        image_shape: Tuple[int, int],
+    ) -> Optional[CenterEstimate]:
+        """Estimate grasp center while keeping the 2D grasp ray stable."""
+        h, w = image_shape
+        u_center, v_center = self._grasp_center_uv(det, bbox, raw_mask, w, h)
+
+        if self.center_strategy == 'median':
+            selected = self._points_from_projected_mask(
+                pts_color, u_proj, v_proj, work_mask)
+            if self.robust_iqr_filter_enable:
+                selected = self._robust_iqr_filter(selected)
+            if selected.shape[0] < self.min_candidate_points:
+                return None
+
+            center = np.median(selected, axis=0)
+            if not np.all(np.isfinite(center)):
+                return None
+
+            projected_uv = self._project_color_point_to_pixel(center, self.K_rgb)
+            center_uv = (
+                (float(projected_uv[0]), float(projected_uv[1]))
+                if projected_uv is not None
+                else (float(u_center), float(v_center))
+            )
+            return CenterEstimate(
+                center_color=center,
+                center_uv=center_uv,
+                point_count=int(selected.shape[0]),
+                method='full_mask_median',
+            )
+
+        ring_like = canonical in self.grasp_center_ring_classes
+        surface_like = canonical in self.grasp_center_surface_classes
+        sample_mask = None
+        method_prefix = 'inner'
+
+        if ring_like:
+            sample_mask = self._build_grasp_ring_mask(raw_mask, bbox, h, w)
+            method_prefix = 'ring'
+
+        if sample_mask is None or np.count_nonzero(sample_mask) == 0:
+            # Surface classes use the raw instance mask before the general
+            # mask erosion, then apply the center-specific inner erosion here.
+            inner_source = raw_mask if surface_like else work_mask
+            sample_mask = self._build_inner_grasp_mask(inner_source, bbox, h, w)
+            method_prefix = 'surface_inner' if surface_like else 'inner'
+
+        selected = self._points_from_projected_mask(
+            pts_color, u_proj, v_proj, sample_mask)
+
+        if selected.shape[0] < self.center_min_points:
+            selected = self._points_from_projected_mask(
+                pts_color, u_proj, v_proj, work_mask)
+            method_prefix = 'full_mask'
+
+        if self.robust_iqr_filter_enable:
+            selected = self._robust_iqr_filter(selected)
+
+        if selected.shape[0] < max(1, self.center_min_points):
+            return None
+
+        if (
+            self.center_top_face_circle_enable
+            and self.center_strategy in {'ray_depth', 'plane', 'auto'}
+        ):
+            circ_center = self._estimate_center_from_top_face_circle(selected)
+            if circ_center is not None:
+                uv = self._project_color_point_to_pixel(circ_center, self.K_rgb)
+                circ_uv = (
+                    (float(uv[0]), float(uv[1]))
+                    if uv is not None
+                    else (float(u_center), float(v_center))
+                )
+                return CenterEstimate(
+                    center_color=circ_center,
+                    center_uv=circ_uv,
+                    point_count=int(selected.shape[0]),
+                    method=f'{method_prefix}_top_circle',
+                )
+
+        depth_points = self._prefer_near_depth_points(selected)
+        if depth_points.shape[0] < max(1, self.center_min_points):
+            depth_points = selected
+
+        try_plane = (
+            self.center_strategy in {'plane', 'auto'} and
+            self.center_use_plane_fit and
+            depth_points.shape[0] >= self.center_plane_min_points
+        )
+        if try_plane:
+            plane = self._fit_plane_robust_for_center(depth_points)
+            if plane is not None:
+                n, d, mean_resid, n_in = plane
+                residual_ok = (
+                    self.center_plane_max_mean_residual_m <= 0.0 or
+                    mean_resid <= self.center_plane_max_mean_residual_m
+                )
+                if n_in >= self.center_plane_min_points and residual_ok:
+                    center = self._ray_plane_intersect_color(
+                        u_center, v_center, n, d, self.K_rgb)
+                    if center is not None:
+                        return CenterEstimate(
+                            center_color=center,
+                            center_uv=(float(u_center), float(v_center)),
+                            point_count=int(depth_points.shape[0]),
+                            method=f'{method_prefix}_plane',
+                        )
+
+        z_ref = float(np.percentile(
+            depth_points[:, 2],
+            self._clip_percentile(self.center_depth_percentile),
+        ))
+        if not (self.min_depth_m <= z_ref <= self.max_depth_m):
+            z_ref = float(np.median(depth_points[:, 2]))
+        if not (self.min_depth_m <= z_ref <= self.max_depth_m):
+            return None
+
+        center = self._backproject_color_center(u_center, v_center, z_ref, self.K_rgb)
+        if center is None:
+            return None
+
+        return CenterEstimate(
+            center_color=center,
+            center_uv=(float(u_center), float(v_center)),
+            point_count=int(depth_points.shape[0]),
+            method=f'{method_prefix}_ray_depth',
+        )
+
+    def _grasp_center_uv(
+        self,
+        det,
+        bbox: Tuple[int, int, int, int],
+        mask: Optional[np.ndarray],
+        w: int,
+        h: int,
+    ) -> Tuple[float, float]:
+        x1, y1, x2, y2 = bbox
+        bbox_center = ((x1 + x2) * 0.5, (y1 + y2) * 0.5)
+
+        if self.use_detector_center_for_grasp:
+            cx = float(getattr(det, 'center_x', 0.0) or 0.0)
+            cy = float(getattr(det, 'center_y', 0.0) or 0.0)
+            if 0.0 <= cx < w and 0.0 <= cy < h and x1 <= cx <= x2 and y1 <= cy <= y2:
+                max_dim = max(1.0, float(max(x2 - x1, y2 - y1)))
+                max_offset = self.center_max_offset_ratio * max_dim
+                if np.hypot(cx - bbox_center[0], cy - bbox_center[1]) <= max_offset:
+                    return cx, cy
+
+        if mask is not None and np.count_nonzero(mask) > 0:
+            moments = cv2.moments(mask, binaryImage=True)
+            if moments['m00'] > 0:
+                return (
+                    float(moments['m10'] / moments['m00']),
+                    float(moments['m01'] / moments['m00']),
+                )
+
+        return bbox_center
+
+    def _build_inner_grasp_mask(
+        self,
+        mask: Optional[np.ndarray],
+        bbox: Tuple[int, int, int, int],
+        h: int,
+        w: int,
+    ) -> np.ndarray:
+        if mask is None or np.count_nonzero(mask) == 0:
+            out = np.zeros((h, w), dtype=np.uint8)
+            x1, y1, x2, y2 = bbox
+            shrink_x = int(round(0.18 * max(1, x2 - x1)))
+            shrink_y = int(round(0.18 * max(1, y2 - y1)))
+            xx1 = max(0, min(w, x1 + shrink_x))
+            xx2 = max(0, min(w, x2 - shrink_x))
+            yy1 = max(0, min(h, y1 + shrink_y))
+            yy2 = max(0, min(h, y2 - shrink_y))
+            if xx2 > xx1 and yy2 > yy1:
+                out[yy1:yy2, xx1:xx2] = 255
+            else:
+                out[y1:y2, x1:x2] = 255
+            return out
+
+        erosion_px = max(0, int(self.center_inner_mask_erosion_px))
+        if erosion_px <= 0:
+            return mask
+
+        ksz = 2 * erosion_px + 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksz, ksz))
+        eroded = cv2.erode(mask, kernel, iterations=1)
+        if np.count_nonzero(eroded) < self.center_min_points:
+            return mask
+        return eroded
+
+    def _build_grasp_ring_mask(
+        self,
+        mask: Optional[np.ndarray],
+        bbox: Tuple[int, int, int, int],
+        h: int,
+        w: int,
+    ) -> Optional[np.ndarray]:
+        ellipse = self._ellipse_from_mask_or_bbox(mask, bbox)
+        if ellipse is None:
+            return None
+
+        (cu, cv_), (ax_a, ax_b), angle = ellipse
+        center = (int(round(cu)), int(round(cv_)))
+        outer = np.zeros((h, w), dtype=np.uint8)
+        inner = np.zeros((h, w), dtype=np.uint8)
+        outer_scale = max(0.05, float(self.center_ring_outer_scale))
+        inner_scale = max(0.01, float(self.center_ring_inner_scale))
+        if inner_scale >= outer_scale:
+            inner_scale = outer_scale * 0.5
+
+        out_ax = (
+            max(1, int(ax_a * outer_scale / 2.0)),
+            max(1, int(ax_b * outer_scale / 2.0)),
+        )
+        in_ax = (
+            max(1, int(ax_a * inner_scale / 2.0)),
+            max(1, int(ax_b * inner_scale / 2.0)),
+        )
+        cv2.ellipse(outer, center, out_ax, angle, 0, 360, 255, -1)
+        cv2.ellipse(inner, center, in_ax, angle, 0, 360, 255, -1)
+        ring = cv2.bitwise_and(outer, cv2.bitwise_not(inner))
+
+        if self.center_intersect_ring_with_mask and mask is not None:
+            ring = cv2.bitwise_and(ring, mask)
+        return ring
+
+    def _ellipse_from_mask_or_bbox(
+        self,
+        mask: Optional[np.ndarray],
+        bbox: Tuple[int, int, int, int],
+    ):
+        if mask is not None and np.count_nonzero(mask) > 0:
+            cnts, _ = cv2.findContours(
+                mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cnts = [c for c in cnts if len(c) >= 5]
+            if cnts:
+                try:
+                    return cv2.fitEllipse(max(cnts, key=cv2.contourArea))
+                except cv2.error:
+                    pass
+
+            moments = cv2.moments(mask, binaryImage=True)
+            if moments['m00'] > 0:
+                return self._synthetic_ellipse_from_bbox(
+                    moments['m10'] / moments['m00'],
+                    moments['m01'] / moments['m00'],
+                    bbox,
+                )
+
+        x1, y1, x2, y2 = bbox
+        return self._synthetic_ellipse_from_bbox(
+            (x1 + x2) * 0.5,
+            (y1 + y2) * 0.5,
+            bbox,
+        )
+
+    @staticmethod
+    def _synthetic_ellipse_from_bbox(
+        u: float,
+        v: float,
+        bbox: Tuple[int, int, int, int],
+    ):
+        bw = max(2.0, float(bbox[2] - bbox[0]))
+        bh = max(2.0, float(bbox[3] - bbox[1]))
+        return ((float(u), float(v)), (bw, bh), 0.0)
+
+    @staticmethod
+    def _points_from_projected_mask(
+        pts_color: np.ndarray,
+        u_proj: np.ndarray,
+        v_proj: np.ndarray,
+        mask: np.ndarray,
+    ) -> np.ndarray:
+        if mask is None or pts_color.size == 0:
+            return np.empty((0, 3), dtype=np.float64)
+        inside = wr.mask_membership(u_proj, v_proj, mask)
+        if not np.any(inside):
+            return np.empty((0, 3), dtype=np.float64)
+        return pts_color[inside]
+
+    def _prefer_near_depth_points(self, pts: np.ndarray) -> np.ndarray:
+        if pts.shape[0] < max(1, self.center_min_points):
+            return pts
+        percentile = self._clip_percentile(self.center_depth_percentile)
+        threshold = np.percentile(pts[:, 2], percentile)
+        near = pts[pts[:, 2] <= threshold]
+        if near.shape[0] >= max(1, self.center_min_points):
+            return near
+        return pts
+
+    def _fit_plane_robust_for_center(self, pts: np.ndarray):
+        res = self._fit_plane_svd(pts)
+        if res is None:
+            return None
+
+        n, d = res
+        dist = np.abs(pts @ n + d)
+        outlier_m = max(1e-6, float(self.center_plane_outlier_m))
+        inliers = dist <= outlier_m
+        if inliers.sum() >= 3:
+            res2 = self._fit_plane_svd(pts[inliers])
+            if res2 is not None:
+                n, d = res2
+                dist = np.abs(pts @ n + d)
+                inliers = dist <= outlier_m
+
+        n_in = int(inliers.sum())
+        mean_resid = float(dist[inliers].mean()) if n_in > 0 else float('inf')
+        return n, d, mean_resid, n_in
+
+    @staticmethod
+    def _fit_plane_svd(pts: np.ndarray):
+        if pts.shape[0] < 3:
+            return None
+        centroid = pts.mean(axis=0)
+        centered = pts - centroid
+        try:
+            _, _, vh = np.linalg.svd(centered, full_matrices=False)
+        except np.linalg.LinAlgError:
+            return None
+        n = vh[-1]
+        norm = np.linalg.norm(n)
+        if norm < 1e-9:
+            return None
+        n = n / norm
+        d = -float(np.dot(n, centroid))
+        return n, d
+
+    def _estimate_center_from_top_face_circle(
+        self,
+        pts: np.ndarray,
+    ) -> Optional[np.ndarray]:
+        if pts.shape[0] < self.center_top_face_min_points:
+            return None
+
+        z_min = float(np.percentile(pts[:, 2], 5))
+        top_mask = pts[:, 2] <= z_min + self.center_top_face_z_band_m
+        top_pts = pts[top_mask]
+
+        if top_pts.shape[0] < self.center_top_face_min_points:
+            return None
+
+        result = self._fit_circle_xy(top_pts)
+        if result is None:
+            return None
+
+        cx, cy, _ = result
+        z_top = float(np.median(top_pts[:, 2]))
+        if not (self.min_depth_m <= z_top <= self.max_depth_m):
+            return None
+
+        center = np.asarray([cx, cy, z_top], dtype=np.float64)
+        if not np.all(np.isfinite(center)):
+            return None
+        return center
+
+    @staticmethod
+    def _fit_circle_xy(
+        pts: np.ndarray,
+    ) -> Optional[Tuple[float, float, float]]:
+        if pts.shape[0] < 4:
+            return None
+
+        def _single_fit(p: np.ndarray):
+            x = p[:, 0]
+            y = p[:, 1]
+            A = np.column_stack([2.0 * x, 2.0 * y, -np.ones(len(x))])
+            b = x ** 2 + y ** 2
+            try:
+                params, _, _, _ = np.linalg.lstsq(A, b, rcond=None)
+            except np.linalg.LinAlgError:
+                return None
+
+            cx, cy, d = params
+            r_sq = cx ** 2 + cy ** 2 - d
+            if r_sq <= 1e-8:
+                return None
+            return float(cx), float(cy), float(np.sqrt(r_sq))
+
+        result = _single_fit(pts)
+        if result is None:
+            return None
+
+        cx, cy, radius = result
+        dist = np.sqrt((pts[:, 0] - cx) ** 2 + (pts[:, 1] - cy) ** 2)
+        residuals = np.abs(dist - radius)
+        threshold = 2.0 * float(np.median(residuals)) + 1e-6
+        inliers = residuals <= threshold
+
+        if inliers.sum() >= 4:
+            result2 = _single_fit(pts[inliers])
+            if result2 is not None:
+                return result2
+
+        return result
+
+    def _ray_plane_intersect_color(
+        self,
+        u_center: float,
+        v_center: float,
+        n: np.ndarray,
+        d: float,
+        K_rgb: np.ndarray,
+    ) -> Optional[np.ndarray]:
+        if K_rgb is None:
+            return None
+        fx, fy = K_rgb[0, 0], K_rgb[1, 1]
+        cx, cy = K_rgb[0, 2], K_rgb[1, 2]
+        if fx <= 0.0 or fy <= 0.0:
+            return None
+
+        ray = np.asarray(
+            [(u_center - cx) / fx, (v_center - cy) / fy, 1.0],
+            dtype=np.float64,
+        )
+        denom = float(np.dot(n, ray))
+        if abs(denom) < 1e-9:
+            return None
+
+        scale = -float(d) / denom
+        if scale <= 0.0:
+            return None
+
+        point = scale * ray
+        if not np.all(np.isfinite(point)):
+            return None
+        if not (self.min_depth_m <= point[2] <= self.max_depth_m):
+            return None
+        return point.astype(np.float64)
+
+    def _backproject_color_center(
+        self,
+        u_center: float,
+        v_center: float,
+        z: float,
+        K_rgb: np.ndarray,
+    ) -> Optional[np.ndarray]:
+        if K_rgb is None:
+            return None
+        fx, fy = K_rgb[0, 0], K_rgb[1, 1]
+        cx, cy = K_rgb[0, 2], K_rgb[1, 2]
+        if fx <= 0.0 or fy <= 0.0:
+            return None
+
+        point = np.asarray([
+            (float(u_center) - cx) * float(z) / fx,
+            (float(v_center) - cy) * float(z) / fy,
+            float(z),
+        ], dtype=np.float64)
+        if not np.all(np.isfinite(point)):
+            return None
+        return point
+
+    @staticmethod
+    def _clip_percentile(value: float) -> float:
+        return max(1.0, min(99.0, float(value)))
 
     def _rasterize_mask(
         self,
@@ -1388,6 +2032,35 @@ class WristTaskGraspPlannerNode(Node):
         pose.pose.orientation.w = 1.0
         return pose
 
+    def _pose_from_base_point_no_header(self, center_base: np.ndarray) -> Pose:
+        point = np.asarray(center_base, dtype=np.float64).reshape(3)
+
+        pose = Pose()
+        pose.position.x = float(point[0])
+        pose.position.y = float(point[1])
+        pose.position.z = float(point[2])
+        pose.orientation.x = 0.0
+        pose.orientation.y = 0.0
+        pose.orientation.z = 0.0
+        pose.orientation.w = 1.0
+        return pose
+
+    def _publish_all_object_pose_array(self, candidates: Sequence[Candidate], stamp) -> None:
+        if not self.publish_all_object_poses:
+            return
+
+        msg = PoseArray()
+        msg.header.frame_id = self.base_frame
+        if stamp is None:
+            msg.header.stamp = self.get_clock().now().to_msg()
+        else:
+            msg.header.stamp = stamp
+
+        for candidate in candidates:
+            msg.poses.append(self._pose_from_base_point_no_header(candidate.center_base))
+
+        self.pub_all_poses.publish(msg)
+
     def _arm_reference_in_base(self) -> np.ndarray:
         if not self.arm_reference_frame or self.arm_reference_frame == self.base_frame:
             return self.arm_reference_xyz
@@ -1466,6 +2139,19 @@ class WristTaskGraspPlannerNode(Node):
             [xz - wy, yz + wx, 1.0 - (xx + yy)],
         ], dtype=np.float64)
 
+    def _param_to_class_set(self, value) -> set:
+        if value is None:
+            return set()
+        if isinstance(value, str):
+            items = [v.strip() for v in value.split(',')]
+        else:
+            try:
+                items = [str(v).strip() for v in value]
+            except TypeError:
+                items = [str(value).strip()]
+
+        return {self._canonical_output_label(v) for v in items if v}
+
     def _load_alias_map(self, text: str) -> Dict[str, str]:
         try:
             raw = json.loads(text)
@@ -1522,7 +2208,7 @@ class WristTaskGraspPlannerNode(Node):
                 f'#{rank} {c.canonical_class} score={c.score:.3f} '
                 f'conf={m["confidence"]:.2f} arm={m["arm_proximity"]:.2f} '
                 f'dist={m["arm_distance_m"]:.3f}m '
-                f'pts={c.point_count}'
+                f'pts={c.point_count} center={c.center_method}'
             )
 
         self.get_logger().info('Candidate ranking: ' + ' | '.join(rows))

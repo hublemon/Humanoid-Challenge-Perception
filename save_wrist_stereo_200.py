@@ -11,14 +11,12 @@ from sensor_msgs.msg import Image
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 
 
-TOPICS = {
-    "wrist": "/camera_right/camera_right/color/image_rect_raw",
+TOPIC_PRESETS = {
+    "right": "/camera_right/camera_right/color/image_rect_raw",
+    "left": "/camera_left/camera_left/color/image_rect_raw",
 }
 
-TARGET_PER_TOPIC = int(os.environ.get("TARGET_PER_TOPIC", "200"))
-
 STAMP = time.strftime("%Y%m%d_%H%M%S")
-OUT_ROOT = Path(os.environ.get("OUT_DIR", f"captures/wrist_rgb_10hz_200_{STAMP}"))
 
 
 def stamp_name(msg: Image, fallback_count: int) -> str:
@@ -81,11 +79,14 @@ def image_to_file_bytes(msg: Image):
 
 
 class WristStereoSaver(Node):
-    def __init__(self, save_hz: float):
+    def __init__(self, topics, save_hz: float, target_count: int, out_root: Path):
         super().__init__("wrist_stereo_image_saver")
 
+        self.topics = topics
         self.save_hz = float(save_hz)
         self.save_period_sec = 1.0 / self.save_hz if self.save_hz > 0.0 else 0.0
+        self.target_count = int(target_count)
+        self.out_root = out_root
 
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -94,21 +95,21 @@ class WristStereoSaver(Node):
             durability=DurabilityPolicy.VOLATILE,
         )
 
-        self.received = {k: 0 for k in TOPICS}
-        self.saved = {k: 0 for k in TOPICS}
-        self.last_saved_time = {k: None for k in TOPICS}
+        self.received = {k: 0 for k in self.topics}
+        self.saved = {k: 0 for k in self.topics}
+        self.last_saved_time = {k: None for k in self.topics}
         self.done = False
 
-        OUT_ROOT.mkdir(parents=True, exist_ok=True)
-        for name in TOPICS:
-            (OUT_ROOT / name).mkdir(parents=True, exist_ok=True)
+        self.out_root.mkdir(parents=True, exist_ok=True)
+        for name in self.topics:
+            (self.out_root / name).mkdir(parents=True, exist_ok=True)
 
-        self.get_logger().info(f"Saving to: {OUT_ROOT}")
-        self.get_logger().info(f"Target: {TARGET_PER_TOPIC} images per topic")
+        self.get_logger().info(f"Saving to: {self.out_root}")
+        self.get_logger().info(f"Target: {self.target_count} images per topic")
         self.get_logger().info(f"Save rate: {self.save_hz:g} Hz")
 
         self.subs = []
-        for name, topic in TOPICS.items():
+        for name, topic in self.topics.items():
             self.subs.append(
                 self.create_subscription(
                     Image,
@@ -120,7 +121,7 @@ class WristStereoSaver(Node):
             self.get_logger().info(f"Subscribed: {name} <- {topic}")
 
     def cb(self, msg: Image, name: str):
-        if self.saved[name] >= TARGET_PER_TOPIC:
+        if self.saved[name] >= self.target_count:
             self.check_done()
             return
 
@@ -134,15 +135,15 @@ class WristStereoSaver(Node):
         try:
             ext, file_bytes = image_to_file_bytes(msg)
             fname = stamp_name(msg, self.saved[name])
-            path = OUT_ROOT / name / f"{fname}{ext}"
+            path = self.out_root / name / f"{fname}{ext}"
             path.write_bytes(file_bytes)
 
             self.saved[name] += 1
             self.last_saved_time[name] = now_sec
 
-            if self.saved[name] % 20 == 0 or self.saved[name] == TARGET_PER_TOPIC:
+            if self.saved[name] % 20 == 0 or self.saved[name] == self.target_count:
                 self.get_logger().info(
-                    f"{name}: saved {self.saved[name]}/{TARGET_PER_TOPIC}"
+                    f"{name}: saved {self.saved[name]}/{self.target_count}"
                 )
 
         except Exception as e:
@@ -151,11 +152,11 @@ class WristStereoSaver(Node):
         self.check_done()
 
     def check_done(self):
-        if all(self.saved[k] >= TARGET_PER_TOPIC for k in TOPICS):
+        if all(self.saved[k] >= self.target_count for k in self.topics):
             if not self.done:
                 self.done = True
                 self.get_logger().info("Done. Saved all requested images.")
-                self.get_logger().info(f"Output directory: {OUT_ROOT}")
+                self.get_logger().info(f"Output directory: {self.out_root}")
 
 
 def main():
@@ -166,10 +167,35 @@ def main():
         default=float(os.environ.get("SAVE_HZ", "10.0")),
         help="Image save rate in Hz. Default: 10.0",
     )
+    parser.add_argument(
+        "--camera",
+        choices=["right", "left", "both"],
+        default=os.environ.get("WRIST_CAMERA", "right"),
+        help="Wrist RGB camera to save. Default: right",
+    )
+    parser.add_argument(
+        "--count",
+        type=int,
+        default=int(os.environ.get("TARGET_PER_TOPIC", "200")),
+        help="Number of images to save per selected camera. Default: 200",
+    )
     args = parser.parse_args()
 
+    if args.camera == "both":
+        topics = dict(TOPIC_PRESETS)
+    else:
+        topics = {args.camera: TOPIC_PRESETS[args.camera]}
+
+    default_out = f"captures/wrist_rgb_{args.camera}_{args.hz:g}hz_{args.count}_{STAMP}"
+    out_root = Path(os.environ.get("OUT_DIR", default_out))
+
     rclpy.init()
-    node = WristStereoSaver(save_hz=args.hz)
+    node = WristStereoSaver(
+        topics=topics,
+        save_hz=args.hz,
+        target_count=args.count,
+        out_root=out_root,
+    )
 
     try:
         while rclpy.ok() and not node.done:
