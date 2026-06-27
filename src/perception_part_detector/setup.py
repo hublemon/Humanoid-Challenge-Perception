@@ -1,6 +1,5 @@
-from setuptools import find_packages, setup
-import os
 from glob import glob
+from setuptools import find_packages, setup
 
 package_name = 'perception_part_detector'
 
@@ -12,7 +11,7 @@ setup(
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        ('share/' + package_name + '/launch', glob('launch/*.py')),
+        ('share/' + package_name + '/launch', glob('launch/*.launch.py')),
         ('share/' + package_name + '/config', glob('config/*.yaml')),
         ('share/' + package_name + '/weights', glob('weights/*')),
     ],
@@ -24,9 +23,10 @@ setup(
     license='MIT',
     entry_points={
         'console_scripts': [
+            'detector = perception_part_detector.detector_node:main',
             'detector_node = detector_node:main',
-            'nut_detector_node = perception_part_detector.nut_detector_node:main',
             'peg_detector_node = perception_part_detector.peg_detector_node:main',
+            'green_button_color_detector_node = perception_part_detector.green_button_color_detector_node:main',
         ],
     },
 )

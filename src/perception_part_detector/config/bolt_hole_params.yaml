@@ -1,0 +1,15 @@
+bolt_hole_detector:
+  ros__parameters:
+    part_name: bolt_hole
+    head_topic: /zed/zed_node/rgb/image_rect_color
+    wrist_left_topic: /camera_left/camera_left/color/image_rect_raw
+    wrist_right_topic: /camera_right/camera_right/color/image_rect_raw
+    detections_topic: /detections/scenario_d/bolt_hole
+    mode: match
+    parent_class: bolt
+    child_class: bolt_hole
+    index_by_x: false
+    fit_ellipse: true
+    conf_threshold: 0.3
+    iou_threshold: 0.35
+    imgsz: 640

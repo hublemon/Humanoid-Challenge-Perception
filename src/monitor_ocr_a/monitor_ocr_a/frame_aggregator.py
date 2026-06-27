@@ -166,6 +166,12 @@ class FrameAggregatorParts:
         self._history = []
 
     def update(self, result: dict) -> dict:
+        if self._history:
+            prev_backend = self._history[-1].get("reader_backend")
+            next_backend = result.get("reader_backend")
+            if prev_backend and next_backend and prev_backend != next_backend:
+                self._history.clear()
+
         if result.get("parts"):
             counts_recognized = any(p["count"] >= 0 for p in result["parts"])
             all_counts_recognized = all(p["count"] >= 0 for p in result["parts"])
@@ -202,6 +208,8 @@ class FrameAggregatorParts:
             "debug_count_col_candidates": latest.get("debug_count_col_candidates"),
             "debug_mode":           latest.get("debug_mode"),
             "row_index_fallback":   latest.get("row_index_fallback", False),
+            "raw_parts_before_aggregation": latest.get("parts"),
+            "aggregation_mode":      latest.get("aggregation_mode", "majority_window"),
         }
 
     def _aggregate(self) -> dict:
@@ -218,6 +226,33 @@ class FrameAggregatorParts:
                 "counts_recognized":      False,
                 "all_counts_recognized":  False,
                 **self._latest_debug_fields(latest),
+            }
+
+        if latest.get("reader_backend") == "template_icon_digit":
+            parts = [
+                {
+                    "name": PART_NAMES[i],
+                    "count": (
+                        int(latest["parts"][i]["count"])
+                        if latest.get("parts") and len(latest["parts"]) > i
+                        else -1
+                    ),
+                }
+                for i in range(N_ROWS)
+            ]
+            counts_recognized = any(p["count"] >= 0 for p in parts)
+            all_counts_recognized = (
+                all(p["count"] >= 0 for p in parts)
+                and bool(latest.get("all_parts_recognized", True)))
+            latest_with_mode = dict(latest, aggregation_mode="latest_template_frame")
+            return {
+                "frames_used":            len(hist),
+                "parts":                  parts,
+                "latest_elapsed_ms":      latest.get("elapsed_ms"),
+                "latest_screen_detected": True,
+                "counts_recognized":      counts_recognized,
+                "all_counts_recognized":  all_counts_recognized,
+                **self._latest_debug_fields(latest_with_mode),
             }
 
         # 화면 감지된 경우: 유효값의 다수결

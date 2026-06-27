@@ -5,6 +5,7 @@ green_button_center:
     rgb_info_topic: /zed/zed_node/rgb/camera_info
     depth_info_topic: /zed/zed_node/depth/camera_info
     detections_topic: /detections/scenario_c/green_button
+    detections_msg_type: single
     out_pose_topic: /perception/zed/green_button_center
     base_frame: base_link
     camera_frame: ""

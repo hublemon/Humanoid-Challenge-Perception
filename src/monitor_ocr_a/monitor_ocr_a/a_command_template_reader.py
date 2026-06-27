@@ -28,6 +28,8 @@ BBox = Tuple[int, int, int, int]
 
 DEFAULT_ICON_MATCH_THRESHOLD = 0.45
 DEFAULT_DIGIT_MATCH_THRESHOLD = 0.45
+DEFAULT_DIGIT_MARGIN_THRESHOLD = 0.12
+_DIGIT_NORM_SIZE = 48
 DEFAULT_QUANTITY_X_CANDIDATES = (
     (0.74, 0.99),
     (0.76, 0.99),
@@ -554,30 +556,6 @@ def _normalize_icon_edges(img: np.ndarray, size: int = 72) -> np.ndarray:
     return canvas
 
 
-@lru_cache(maxsize=1)
-def _synthetic_digit_templates() -> Dict[str, List[np.ndarray]]:
-    templates = {str(d): [] for d in VALID_DIGITS}
-    fonts = [
-        cv2.FONT_HERSHEY_SIMPLEX,
-        cv2.FONT_HERSHEY_DUPLEX,
-        cv2.FONT_HERSHEY_COMPLEX,
-        cv2.FONT_HERSHEY_PLAIN,
-    ]
-    for digit in VALID_DIGITS:
-        text = str(digit)
-        for font in fonts:
-            for scale in (1.5, 1.8, 2.1):
-                for thickness in (2, 3):
-                    canvas = np.zeros((80, 80), dtype=np.uint8)
-                    (tw, th), baseline = cv2.getTextSize(text, font, scale, thickness)
-                    x = (80 - tw) // 2
-                    y = (80 + th) // 2
-                    cv2.putText(canvas, text, (x, y), font, scale,
-                                255, thickness, cv2.LINE_AA)
-                    templates[str(digit)].append(_normalize_binary_glyph(canvas))
-    return templates
-
-
 def _load_templates_uncached(template_root_key: str) -> dict:
     template_root = template_root_key or None
     roots = _template_roots(template_root)
@@ -595,24 +573,33 @@ def _load_templates_uncached(template_root_key: str) -> dict:
                 icon_templates[class_name].append(_normalize_icon_edges(img))
                 icon_files += 1
         for digit in VALID_DIGITS:
-            path = os.path.join(root, "digits", f"{digit}.png")
-            img = _read_template(path)
-            if img is not None:
-                digit_templates[str(digit)].append(_normalize_binary_glyph(img))
-                digit_files += 1
-
-    synthetic = _synthetic_digit_templates()
-    for digit, variants in synthetic.items():
-        digit_templates[digit].extend(variants)
+            digit_key = str(digit)
+            paths = [os.path.join(root, "digits", f"{digit}.png")]
+            digit_dir = os.path.join(root, "digits", digit_key)
+            if os.path.isdir(digit_dir):
+                for filename in sorted(os.listdir(digit_dir)):
+                    if filename.lower().endswith((".png", ".jpg", ".jpeg", ".bmp")):
+                        paths.append(os.path.join(digit_dir, filename))
+            seen_paths = set()
+            for path in paths:
+                if path in seen_paths:
+                    continue
+                seen_paths.add(path)
+                img = _read_template(path)
+                if img is not None:
+                    norm_info = _normalize_digit_crop(img)
+                    if norm_info["normalized_crop"] is not None:
+                        digit_templates[digit_key].append(norm_info["normalized_crop"])
+                        digit_files += 1
 
     missing_icons = [name for name, vals in icon_templates.items() if not vals]
-    missing_digits = [str(d) for d in VALID_DIGITS if digit_files == 0]
+    missing_digits = [str(d) for d in VALID_DIGITS if not digit_templates[str(d)]]
     if missing_icons:
         warnings.append(
             "missing_icon_templates=" + ",".join(missing_icons)
             + "; icon confidence will be low unless row-order fallback is enabled")
     if missing_digits:
-        warnings.append("missing_digit_templates; using synthetic digit templates")
+        warnings.append("missing_digit_templates=" + ",".join(missing_digits))
 
     return {
         "icons": icon_templates,
@@ -674,68 +661,422 @@ def classify_icon(icon_crop: np.ndarray) -> Tuple[str, float]:
     return _classify_icon_with_templates(icon_crop, templates.get("icons", {}))
 
 
-def _find_digit_blob(digit_crop: np.ndarray) -> Tuple[Optional[np.ndarray], Optional[BBox], float]:
-    if digit_crop is None or digit_crop.size == 0:
-        return None, None, 0.0
-    H, W = digit_crop.shape[:2]
-    gray = cv2.cvtColor(digit_crop, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (3, 3), 0)
-    binary = cv2.adaptiveThreshold(
-        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 25, 8)
-    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
-    cnts, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    candidates = []
-    for cnt in cnts:
-        x, y, w, h = cv2.boundingRect(cnt)
-        area = cv2.contourArea(cnt)
-        if area < max(8, H * W * 0.0008):
-            continue
-        if h < H * 0.18 or w < max(2, W * 0.015) or w > W * 0.65:
-            continue
-        aspect = h / max(w, 1)
-        if aspect < 0.75:
-            continue
-        center_penalty = abs((x + w / 2.0) / max(W, 1) - 0.5)
-        height_score = min(1.0, h / max(H * 0.55, 1.0))
-        area_score = min(1.0, area / max(H * W * 0.08, 1.0))
-        score = height_score + area_score - center_penalty * 0.35
-        candidates.append((score, (x, y, w, h)))
-    if not candidates:
-        return None, None, 0.0
+def _empty_digit_detail(reason: str = "no_blob") -> dict:
+    scores = {str(d): 0.0 for d in VALID_DIGITS}
+    return {
+        "value": -1,
+        "confidence": 0.0,
+        "scores": scores,
+        "top1": {"digit": -1, "score": 0.0},
+        "top2": {"digit": -1, "score": 0.0},
+        "margin": 0.0,
+        "rejected_reason": reason,
+        "raw_crop": None,
+        "binary_crop": None,
+        "normalized_crop": None,
+        "blob_bbox": None,
+        "foreground_ratio": 0.0,
+        "heuristic": {"digit": -1, "confidence": 0.0, "scores": {}},
+    }
 
-    _, bbox = max(candidates, key=lambda item: item[0])
+
+def _threshold_digit_foreground(digit_crop: np.ndarray) -> Optional[np.ndarray]:
+    if digit_crop is None or digit_crop.size == 0:
+        return None
+    gray = cv2.cvtColor(digit_crop, cv2.COLOR_BGR2GRAY) if len(digit_crop.shape) == 3 else digit_crop.copy()
+    if gray.size == 0:
+        return None
+    gray = cv2.GaussianBlur(gray, (3, 3), 0)
+    candidates = []
+    try:
+        _, otsu_inv = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        _, otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        candidates.append(("otsu_inv", otsu_inv))
+        candidates.append(("otsu", otsu))
+    except Exception:
+        pass
+    block = max(11, (min(gray.shape[:2]) // 2) * 2 + 1)
+    block = min(block, 35)
+    if block % 2 == 0:
+        block += 1
+    candidates.append((
+        "adaptive_inv",
+        cv2.adaptiveThreshold(
+            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY_INV, block, 7),
+    ))
+    candidates.append((
+        "adaptive",
+        cv2.adaptiveThreshold(
+            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY, block, 7),
+    ))
+    choices = []
+    for _name, binary in candidates:
+        # Keep thin digit strokes.  A global open can turn a fragmented 0/3 into
+        # one surviving vertical stroke, which then looks exactly like a 1.
+        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, np.ones((2, 2), np.uint8))
+        ratio = float(np.count_nonzero(binary)) / float(binary.size)
+        if ratio <= 0.0:
+            continue
+        fg = gray[binary > 0]
+        bg = gray[binary == 0]
+        dark_penalty = 0.0
+        if fg.size and bg.size and float(fg.mean()) >= float(bg.mean()):
+            dark_penalty = 0.35
+        ratio_penalty = abs(ratio - 0.16)
+        choices.append((ratio_penalty + dark_penalty, ratio, binary))
+    if not choices:
+        return None
+    choices.sort(key=lambda item: (item[0], item[1]))
+    return choices[0][2]
+
+
+def _union_bbox(boxes: Sequence[BBox]) -> Optional[BBox]:
+    if not boxes:
+        return None
+    x1 = min(x for x, _y, _w, _h in boxes)
+    y1 = min(y for _x, y, _w, _h in boxes)
+    x2 = max(x + w for x, _y, w, _h in boxes)
+    y2 = max(y + h for _x, y, _w, h in boxes)
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return int(x1), int(y1), int(x2 - x1), int(y2 - y1)
+
+
+def _digit_bbox_score(bbox: BBox, area: int, height: int, width: int) -> float:
     x, y, w, h = bbox
-    pad = max(3, int(max(w, h) * 0.25))
+    aspect = h / max(w, 1)
+    if aspect < 0.55:
+        return -1e9
+    center_penalty = abs((x + w / 2.0) / max(width, 1) - 0.5)
+    height_score = min(1.0, h / max(height * 0.55, 1.0))
+    area_score = min(1.0, area / max(height * width * 0.10, 1.0))
+    width_penalty = max(0.0, (w / max(width, 1)) - 0.58) * 0.65
+    return 1.7 * height_score + area_score - 0.45 * center_penalty - width_penalty
+
+
+def _select_digit_component(binary: np.ndarray) -> Optional[BBox]:
+    if binary is None or binary.size == 0:
+        return None
+    H, W = binary.shape[:2]
+    num, _labels, stats, centroids = cv2.connectedComponentsWithStats((binary > 0).astype(np.uint8), 8)
+    candidates = []
+    component_boxes = []
+    component_areas = []
+    for label in range(1, num):
+        x, y, w, h, area = [int(v) for v in stats[label]]
+        if area < max(4, int(H * W * 0.0006)):
+            continue
+        if h < 2 or w < 2:
+            continue
+        if w > int(W * 0.78) or h > int(H * 0.98):
+            continue
+        cx, cy = centroids[label]
+        if cx < W * 0.06 or cx > W * 0.94 or cy < H * 0.04 or cy > H * 0.96:
+            continue
+        bbox = (x, y, w, h)
+        component_boxes.append(bbox)
+        component_areas.append(area)
+        score = _digit_bbox_score(bbox, area, H, W)
+        candidates.append((score, (x, y, w, h)))
+
+    if not candidates:
+        return None
+
+    # Prefer the union of nearby stroke components.  A broken 0/3 often appears
+    # as several disconnected strokes; picking only the tallest component makes
+    # those digits collapse into a false 1.
+    best_single = max(candidates, key=lambda item: item[0])[1]
+    x, y, w, h = best_single
+    cx = x + w / 2.0
+    linked_boxes = []
+    linked_area = 0
+    for bbox, area in zip(component_boxes, component_areas):
+        bx, by, bw, bh = bbox
+        bcx = bx + bw / 2.0
+        x_near = abs(bcx - cx) <= max(W * 0.18, w * 1.45)
+        y_overlap = not (by + bh < y - H * 0.14 or by > y + h + H * 0.14)
+        tall_or_useful_stroke = bh >= H * 0.08 or bw >= W * 0.045 or area >= H * W * 0.002
+        if x_near and y_overlap and tall_or_useful_stroke:
+            linked_boxes.append(bbox)
+            linked_area += area
+
+    union = _union_bbox(linked_boxes)
+    if union is not None:
+        _ux, _uy, uw, uh = union
+        union_ratio = uw / max(W, 1)
+        union_aspect = uh / max(uw, 1)
+        union_score = _digit_bbox_score(union, linked_area, H, W)
+        best_score = _digit_bbox_score(best_single, int(max(component_areas)), H, W)
+        if (
+            len(linked_boxes) >= 2
+            and union_ratio <= 0.78
+            and union_aspect >= 0.55
+            and union_score >= best_score - 0.20
+        ):
+            return union
+
+    return best_single
+
+
+def _center_on_mass(binary: np.ndarray, size: int = _DIGIT_NORM_SIZE) -> np.ndarray:
+    h, w = binary.shape[:2]
+    scale = min((size - 8) / max(w, 1), (size - 8) / max(h, 1))
+    nw, nh = max(1, int(round(w * scale))), max(1, int(round(h * scale)))
+    resized = cv2.resize(binary, (nw, nh), interpolation=cv2.INTER_AREA)
+    _, resized = cv2.threshold(resized, 80, 255, cv2.THRESH_BINARY)
+    canvas = np.zeros((size, size), dtype=np.uint8)
+    moments = cv2.moments(resized)
+    if moments["m00"] > 0:
+        cx = moments["m10"] / moments["m00"]
+        cy = moments["m01"] / moments["m00"]
+        x0 = int(round(size / 2.0 - cx))
+        y0 = int(round(size / 2.0 - cy))
+    else:
+        x0 = (size - nw) // 2
+        y0 = (size - nh) // 2
+    x0 = max(0, min(size - nw, x0))
+    y0 = max(0, min(size - nh, y0))
+    canvas[y0:y0 + nh, x0:x0 + nw] = resized
+    return canvas
+
+
+def _normalize_digit_crop(digit_crop: np.ndarray, size: int = _DIGIT_NORM_SIZE) -> dict:
+    detail = _empty_digit_detail("no_blob")
+    if digit_crop is None or digit_crop.size == 0:
+        return detail
+    binary = _threshold_digit_foreground(digit_crop)
+    if binary is None:
+        return detail
+    bbox = _select_digit_component(binary)
+    if bbox is None:
+        detail["binary_crop"] = binary
+        return detail
+    H, W = binary.shape[:2]
+    x, y, w, h = bbox
+    pad = max(3, int(round(max(w, h) * 0.30)))
     x1 = max(0, x - pad)
     y1 = max(0, y - pad)
     x2 = min(W, x + w + pad)
     y2 = min(H, y + h + pad)
-    return digit_crop[y1:y2, x1:x2].copy(), (x1, y1, x2 - x1, y2 - y1), float(_edge_density(digit_crop[y1:y2, x1:x2]))
+    raw_crop = digit_crop[y1:y2, x1:x2].copy()
+    binary_crop = binary[y1:y2, x1:x2].copy()
+    fg_ratio = float(np.count_nonzero(binary_crop)) / float(binary_crop.size)
+    detail.update({
+        "raw_crop": raw_crop,
+        "binary_crop": binary_crop,
+        "blob_bbox": (x1, y1, x2 - x1, y2 - y1),
+        "foreground_ratio": fg_ratio,
+    })
+    if fg_ratio < 0.025 or fg_ratio > 0.55:
+        detail["rejected_reason"] = "ambiguous"
+        return detail
+    detail["normalized_crop"] = _center_on_mass(binary_crop, size)
+    return detail
+
+
+def _shift_binary(img: np.ndarray, dx: int, dy: int) -> np.ndarray:
+    h, w = img.shape[:2]
+    out = np.zeros_like(img)
+    src_x1 = max(0, -dx)
+    src_y1 = max(0, -dy)
+    src_x2 = min(w, w - dx)
+    src_y2 = min(h, h - dy)
+    dst_x1 = max(0, dx)
+    dst_y1 = max(0, dy)
+    if src_x2 <= src_x1 or src_y2 <= src_y1:
+        return out
+    out[dst_y1:dst_y1 + (src_y2 - src_y1),
+        dst_x1:dst_x1 + (src_x2 - src_x1)] = img[src_y1:src_y2, src_x1:src_x2]
+    return out
+
+
+def _hu_similarity(sample: np.ndarray, template: np.ndarray) -> float:
+    try:
+        hs = cv2.HuMoments(cv2.moments(sample)).flatten()
+        ht = cv2.HuMoments(cv2.moments(template)).flatten()
+        hs = -np.sign(hs) * np.log10(np.abs(hs) + 1e-12)
+        ht = -np.sign(ht) * np.log10(np.abs(ht) + 1e-12)
+        dist = float(np.linalg.norm(hs - ht))
+        return max(0.0, min(1.0, 1.0 - dist / 18.0))
+    except Exception:
+        return 0.0
+
+
+def _match_digit_binary(sample: np.ndarray, template: np.ndarray) -> float:
+    if sample is None or template is None or sample.size == 0 or template.size == 0:
+        return 0.0
+    if sample.shape != template.shape:
+        template = cv2.resize(template, (sample.shape[1], sample.shape[0]),
+                              interpolation=cv2.INTER_AREA)
+        _, template = cv2.threshold(template, 80, 255, cv2.THRESH_BINARY)
+    sample_bin = sample > 0
+    best = 0.0
+    for dy in (-2, 0, 2):
+        for dx in (-2, 0, 2):
+            shifted = _shift_binary(template, dx, dy)
+            tmpl_bin = shifted > 0
+            inter = float(np.logical_and(sample_bin, tmpl_bin).sum())
+            union = float(np.logical_or(sample_bin, tmpl_bin).sum())
+            total_fg = float(sample_bin.sum() + tmpl_bin.sum())
+            if union <= 0.0 or total_fg <= 0.0:
+                continue
+            iou = inter / union
+            dice = (2.0 * inter) / total_fg
+            l1 = 1.0 - (
+                np.abs(sample.astype(np.int16) - shifted.astype(np.int16)).sum()
+                / max(255.0 * total_fg, 1.0)
+            )
+            l1 = max(0.0, min(1.0, float(l1)))
+            hu = _hu_similarity(sample, shifted)
+            score = 0.42 * iou + 0.34 * dice + 0.19 * l1 + 0.05 * hu
+            best = max(best, score)
+    return max(0.0, min(1.0, float(best)))
+
+
+def _digit_shape_heuristic(norm: Optional[np.ndarray]) -> dict:
+    scores = {"0": 0.0, "1": 0.0, "3": 0.0}
+    if norm is None or norm.size == 0:
+        return {"digit": -1, "confidence": 0.0, "scores": scores}
+    fg = norm > 0
+    ys, xs = np.where(fg)
+    if len(xs) < 3:
+        return {"digit": -1, "confidence": 0.0, "scores": scores}
+    H, W = norm.shape[:2]
+    x1, x2 = xs.min(), xs.max()
+    y1, y2 = ys.min(), ys.max()
+    bw = max(1, x2 - x1 + 1)
+    bh = max(1, y2 - y1 + 1)
+    crop = fg[y1:y2 + 1, x1:x2 + 1]
+    width_ratio = bw / float(W)
+    x_std = float(xs.std()) / float(W)
+    left = float(crop[:, :max(1, bw // 3)].mean())
+    mid = float(crop[:, bw // 3:max(bw // 3 + 1, 2 * bw // 3)].mean())
+    right = float(crop[:, max(0, 2 * bw // 3):].mean())
+    top = float(crop[:max(1, bh // 4), :].mean())
+    center_h = float(crop[max(0, bh // 3):max(bh // 3 + 1, 2 * bh // 3), :].mean())
+    bottom = float(crop[max(0, 3 * bh // 4):, :].mean())
+    center_bg = 1.0 - float(crop[bh // 3:max(bh // 3 + 1, 2 * bh // 3),
+                                  bw // 3:max(bw // 3 + 1, 2 * bw // 3)].mean())
+    contours, hierarchy = cv2.findContours(norm, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+    holes = 0
+    if hierarchy is not None:
+        holes = sum(1 for item in hierarchy[0] if item[3] >= 0)
+
+    scores["1"] = max(0.0, min(1.0,
+        (1.0 - min(1.0, width_ratio / 0.34)) * 0.55
+        + (1.0 - min(1.0, x_std / 0.13)) * 0.35
+        + (0.10 if holes == 0 else -0.20)))
+    scores["0"] = max(0.0, min(1.0,
+        (0.35 if holes > 0 else 0.0)
+        + 0.20 * min(1.0, center_bg / 0.82)
+        + 0.15 * min(1.0, left / 0.22)
+        + 0.15 * min(1.0, right / 0.22)
+        + 0.075 * min(1.0, top / 0.20)
+        + 0.075 * min(1.0, bottom / 0.20)))
+    scores["3"] = max(0.0, min(1.0,
+        (0.26 if holes == 0 else -0.18)
+        + 0.22 * min(1.0, right / 0.24)
+        + 0.14 * min(1.0, top / 0.20)
+        + 0.14 * min(1.0, center_h / 0.20)
+        + 0.14 * min(1.0, bottom / 0.20)
+        + 0.10 * max(0.0, min(1.0, (right - left + 0.08) / 0.28))))
+    digit, conf = max(((int(k), float(v)) for k, v in scores.items()), key=lambda item: item[1])
+    if conf < 0.58:
+        digit = -1
+    return {"digit": digit, "confidence": conf, "scores": scores}
 
 
 def _classify_digit_with_templates(
-    digit_crop: np.ndarray, digit_templates: Dict[str, List[np.ndarray]]
-) -> Tuple[int, float, Optional[np.ndarray], Optional[BBox]]:
-    blob_crop, blob_bbox, _blob_score = _find_digit_blob(digit_crop)
-    if blob_crop is None:
-        return -1, 0.0, None, None
-    sample = _normalize_binary_glyph(blob_crop)
-    best_digit = -1
-    best_score = 0.0
+    digit_crop: np.ndarray,
+    digit_templates: Dict[str, List[np.ndarray]],
+    *,
+    threshold: float = DEFAULT_DIGIT_MATCH_THRESHOLD,
+    margin_threshold: float = DEFAULT_DIGIT_MARGIN_THRESHOLD,
+) -> dict:
+    detail = _normalize_digit_crop(digit_crop)
+    if detail["normalized_crop"] is None:
+        detail["value"] = -1
+        return detail
+    sample = detail["normalized_crop"]
+    available = {
+        str(digit): digit_templates.get(str(digit), [])
+        for digit in VALID_DIGITS
+        if digit_templates.get(str(digit), [])
+    }
+    missing_template_digits = [str(digit) for digit in VALID_DIGITS if str(digit) not in available]
+    if missing_template_digits:
+        detail.update({
+            "value": -1,
+            "confidence": 0.0,
+            "scores": {str(d): 0.0 for d in VALID_DIGITS},
+            "top1": {"digit": -1, "score": 0.0},
+            "top2": {"digit": -1, "score": 0.0},
+            "margin": 0.0,
+            "rejected_reason": "no_template",
+            "missing_template_digits": missing_template_digits,
+            "heuristic": _digit_shape_heuristic(sample),
+        })
+        return detail
+
+    scores = {str(d): 0.0 for d in VALID_DIGITS}
     for digit in VALID_DIGITS:
         variants = digit_templates.get(str(digit), [])
-        score = max((_match_binary(sample, tmpl) for tmpl in variants), default=0.0)
-        if score > best_score:
-            best_digit = int(digit)
-            best_score = score
-    return best_digit, float(best_score), blob_crop, blob_bbox
+        if not variants:
+            continue
+        variant_scores = sorted(
+            (_match_digit_binary(sample, tmpl) for tmpl in variants),
+            reverse=True)
+        top = variant_scores[:min(3, len(variant_scores))]
+        scores[str(digit)] = float(0.65 * top[0] + 0.35 * (sum(top) / len(top)))
+
+    heuristic = _digit_shape_heuristic(sample)
+    sorted_before = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    if len(sorted_before) >= 2 and sorted_before[0][1] - sorted_before[1][1] < 0.12:
+        h_digit = heuristic.get("digit", -1)
+        h_conf = float(heuristic.get("confidence", 0.0))
+        if h_digit in VALID_DIGITS and h_conf >= 0.62:
+            scores[str(h_digit)] = min(1.0, scores[str(h_digit)] + 0.055 * h_conf)
+
+    ranked = sorted(((int(k), float(v)) for k, v in scores.items()),
+                    key=lambda item: item[1], reverse=True)
+    top1_digit, top1_score = ranked[0] if ranked else (-1, 0.0)
+    top2_digit, top2_score = ranked[1] if len(ranked) > 1 else (-1, 0.0)
+    margin = float(top1_score - top2_score)
+    reason = "ok"
+    value = int(top1_digit)
+    if top1_score < threshold:
+        reason = "low_confidence"
+        value = -1
+    elif margin < margin_threshold:
+        reason = "low_margin"
+        value = -1
+    elif (heuristic.get("digit", -1) in VALID_DIGITS
+          and heuristic.get("digit") != top1_digit
+          and float(heuristic.get("confidence", 0.0)) >= 0.78
+          and margin < 0.14):
+        reason = "ambiguous"
+        value = -1
+
+    detail.update({
+        "value": int(value),
+        "confidence": float(top1_score),
+        "scores": {str(k): round(float(v), 4) for k, v in scores.items()},
+        "top1": {"digit": int(top1_digit), "score": float(top1_score)},
+        "top2": {"digit": int(top2_digit), "score": float(top2_score)},
+        "margin": float(margin),
+        "rejected_reason": reason,
+        "missing_template_digits": missing_template_digits,
+        "heuristic": heuristic,
+    })
+    return detail
 
 
 def classify_digit(digit_crop: np.ndarray) -> Tuple[int, float]:
     templates = load_templates()
-    value, confidence, _blob, _bbox = _classify_digit_with_templates(
-        digit_crop, templates.get("digits", {}))
-    return value, confidence
+    detail = _classify_digit_with_templates(digit_crop, templates.get("digits", {}))
+    return int(detail.get("value", -1)), float(detail.get("confidence", 0.0))
 
 
 def _parse_quantity_candidates(candidates) -> List[Tuple[float, float]]:
@@ -803,6 +1144,8 @@ def make_debug_images(
     icon_crops: Optional[Sequence[np.ndarray]] = None,
     digit_crops: Optional[Sequence[np.ndarray]] = None,
     digit_blob_crops: Optional[Sequence[np.ndarray]] = None,
+    digit_binary_crops: Optional[Sequence[np.ndarray]] = None,
+    digit_norm_crops: Optional[Sequence[np.ndarray]] = None,
     row_results: Optional[Sequence[dict]] = None,
     debug_view: str = "mosaic",
 ) -> Dict[str, np.ndarray]:
@@ -823,6 +1166,18 @@ def make_debug_images(
         _draw_debug_bbox(overlay, bbox, _DEBUG_COLORS["digit"], f"digit{idx + 1}")
     for idx, bbox in enumerate(debug_bboxes.get("digit_blob_bboxes") or []):
         _draw_debug_bbox(overlay, bbox, _DEBUG_COLORS["blob"], f"blob{idx + 1}")
+    for idx, bbox in enumerate(debug_bboxes.get("row_bboxes") or []):
+        if idx >= len(row_results) or bbox is None:
+            continue
+        r = row_results[idx]
+        x, y, _w, h = bbox
+        text = (
+            f"row{idx + 1} digit={r.get('digit_value', -1)} "
+            f"conf={r.get('digit_confidence', 0.0):.2f} "
+            f"margin={r.get('digit_margin', 0.0):.2f}"
+        )
+        cv2.putText(overlay, text, (x + 4, y + max(16, min(h - 4, 22))),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1, cv2.LINE_AA)
 
     labels = []
     for idx in range(N_ROWS):
@@ -832,7 +1187,9 @@ def make_debug_images(
                 f"r{idx + 1}: {r.get('icon_class', 'unknown')} "
                 f"{r.get('icon_confidence', 0.0):.2f} / "
                 f"d={r.get('digit_value', -1)} "
-                f"{r.get('digit_confidence', 0.0):.2f}"
+                f"{r.get('digit_confidence', 0.0):.2f} "
+                f"m={r.get('digit_margin', 0.0):.2f} "
+                f"{r.get('digit_rejected_reason', '')}"
             )
         else:
             labels.append(f"r{idx + 1}")
@@ -841,6 +1198,14 @@ def make_debug_images(
     icon_sheet = _contact_sheet(icon_crops or [], [f"icon {i + 1}" for i in range(len(icon_crops or []))], 130, 110)
     digit_sheet = _contact_sheet(digit_crops or [], [f"digit {i + 1}" for i in range(len(digit_crops or []))], 130, 110)
     blob_sheet = _contact_sheet(digit_blob_crops or [], [f"blob {i + 1}" for i in range(len(digit_blob_crops or []))], 130, 110)
+    binary_sheet = _contact_sheet(
+        [img for img in (digit_binary_crops or []) if img is not None],
+        [f"binary {i + 1}" for i, img in enumerate(digit_binary_crops or []) if img is not None],
+        130, 110)
+    norm_sheet = _contact_sheet(
+        [img for img in (digit_norm_crops or []) if img is not None],
+        [f"norm {i + 1}" for i, img in enumerate(digit_norm_crops or []) if img is not None],
+        130, 110)
 
     top_left = _label_image(_fit_to_box(overlay, 700, 390), "bbox_overlay")
     top_right = _label_image(_fit_to_box(table_crop, 500, 390), "table_crop")
@@ -851,8 +1216,10 @@ def make_debug_images(
             _fit_to_box(icon_sheet, 1200, 120),
             _fit_to_box(digit_sheet, 1200, 120),
             _fit_to_box(blob_sheet, 1200, 120),
-        ]), 1200, 360),
-        "icon/digit crops",
+            _fit_to_box(binary_sheet, 1200, 120),
+            _fit_to_box(norm_sheet, 1200, 120),
+        ]), 1200, 600),
+        "icon/digit raw/binary/norm crops",
     )
     mosaic = cv2.vconcat([top, row_panel, crops_panel])
 
@@ -862,6 +1229,8 @@ def make_debug_images(
         "icon_crops": icon_sheet,
         "digit_crops": digit_sheet,
         "digit_blobs": blob_sheet,
+        "digit_binaries": binary_sheet,
+        "digit_norms": norm_sheet,
         "mosaic": mosaic,
     }
     images["selected"] = images[debug_view] if debug_view in images else images["mosaic"]
@@ -917,6 +1286,7 @@ def _failure_result(
         "debug_count_col_candidates": [],
         "debug_mode": debug_mode,
         "row_index_fallback": False,
+        "raw_parts_before_aggregation": [{"name": n, "count": -1} for n in PART_NAMES],
     }
     if debug_images and work_img is not None:
         result["_debug_images"] = make_debug_images(
@@ -932,7 +1302,7 @@ def process_frame_template_icon_digit(
     *,
     icon_match_threshold: float = DEFAULT_ICON_MATCH_THRESHOLD,
     digit_match_threshold: float = DEFAULT_DIGIT_MATCH_THRESHOLD,
-    allow_row_order_fallback: bool = True,
+    allow_row_order_fallback: bool = False,
     quantity_x_candidates=None,
     debug_images: bool = False,
     debug_view: str = "mosaic",
@@ -1024,18 +1394,21 @@ def process_frame_template_icon_digit(
         digit_eval = []
         for row_idx, row_crop in enumerate(row_crops):
             digit_crop, digit_rel_bbox = _extract_digit_crop_with_bbox(row_crop, cand)
-            value, conf, blob_crop, blob_bbox = _classify_digit_with_templates(
-                digit_crop, digit_templates)
-            valid = value in VALID_DIGITS and conf >= digit_match_threshold
+            digit_detail = _classify_digit_with_templates(
+                digit_crop, digit_templates,
+                threshold=digit_match_threshold,
+                margin_threshold=DEFAULT_DIGIT_MARGIN_THRESHOLD)
+            value = int(digit_detail.get("value", -1))
+            conf = float(digit_detail.get("confidence", 0.0))
+            valid = value in VALID_DIGITS and digit_detail.get("rejected_reason") == "ok"
             digit_eval.append({
                 "row": row_idx,
-                "value": int(value),
+                "value": value,
                 "confidence": float(conf),
                 "valid": bool(valid),
                 "digit_crop": digit_crop,
                 "digit_rel_bbox": digit_rel_bbox,
-                "blob_crop": blob_crop,
-                "blob_bbox": blob_bbox,
+                "detail": digit_detail,
             })
         valid_count = sum(1 for item in digit_eval if item["valid"])
         avg_conf = float(np.mean([item["confidence"] for item in digit_eval])) if digit_eval else 0.0
@@ -1068,6 +1441,8 @@ def process_frame_template_icon_digit(
     icon_crops = []
     digit_crops = []
     digit_blob_crops = []
+    digit_binary_crops = []
+    digit_norm_crops = []
     icon_abs_bboxes = []
     digit_abs_bboxes = []
     digit_blob_abs_bboxes = []
@@ -1097,22 +1472,29 @@ def process_frame_template_icon_digit(
         digit_item = selected_digit_eval[row_idx] if row_idx < len(selected_digit_eval) else None
         if digit_item is None:
             digit_crop, digit_rel_bbox = _extract_digit_crop_with_bbox(row_crop, selected_count_x)
-            digit_value, digit_conf, blob_crop, blob_bbox = -1, 0.0, None, None
+            digit_detail = _empty_digit_detail("no_blob")
+            digit_value, digit_conf = -1, 0.0
         else:
             digit_crop = digit_item["digit_crop"]
             digit_rel_bbox = digit_item["digit_rel_bbox"]
             digit_value = digit_item["value"]
             digit_conf = digit_item["confidence"]
-            blob_crop = digit_item["blob_crop"]
-            blob_bbox = digit_item["blob_bbox"]
-        if digit_value not in VALID_DIGITS or digit_conf < digit_match_threshold:
+            digit_detail = digit_item["detail"]
+        if digit_value not in VALID_DIGITS or digit_detail.get("rejected_reason") != "ok":
             digit_value = -1
         digit_crops.append(digit_crop)
         dx, dy, dw, dh = digit_rel_bbox
         digit_abs_bbox = (rx + dx, ry + dy, dw, dh)
         digit_abs_bboxes.append(digit_abs_bbox)
+        blob_crop = digit_detail.get("raw_crop")
+        binary_crop = digit_detail.get("binary_crop")
+        norm_crop = digit_detail.get("normalized_crop")
+        blob_bbox = digit_detail.get("blob_bbox")
         if blob_crop is not None:
             digit_blob_crops.append(blob_crop)
+        raw_debug_crop = blob_crop if blob_crop is not None else digit_crop
+        digit_binary_crops.append(binary_crop)
+        digit_norm_crops.append(norm_crop)
         abs_blob_bbox = None
         if blob_bbox is not None:
             bx, by, bw, bh = blob_bbox
@@ -1135,13 +1517,40 @@ def process_frame_template_icon_digit(
             "digit_value": int(digit_value),
             "digit_confidence": float(digit_conf),
             "digit_threshold": float(digit_match_threshold),
+            "digit_scores": digit_detail.get("scores", {str(d): 0.0 for d in VALID_DIGITS}),
+            "digit_top1": digit_detail.get("top1", {"digit": -1, "score": 0.0}),
+            "digit_top2": digit_detail.get("top2", {"digit": -1, "score": 0.0}),
+            "digit_margin": float(digit_detail.get("margin", 0.0)),
+            "digit_rejected_reason": digit_detail.get("rejected_reason", "no_blob"),
+            "digit_missing_template_digits": digit_detail.get("missing_template_digits", []),
+            "digit_foreground_ratio": float(digit_detail.get("foreground_ratio", 0.0)),
+            "digit_shape_heuristic": digit_detail.get("heuristic", {}),
+            "raw_digit_crop": {
+                "debug_image": f"row{row_idx + 1}_digit_raw",
+                "save_name": f"row{row_idx + 1}_digit_raw.png",
+                "shape": list(raw_debug_crop.shape[:2]) if raw_debug_crop is not None else None,
+            },
+            "binary_digit_crop": {
+                "debug_image": f"row{row_idx + 1}_digit_binary",
+                "save_name": f"row{row_idx + 1}_digit_binary.png",
+                "shape": list(binary_crop.shape[:2]) if binary_crop is not None else None,
+            },
+            "normalized_digit_crop": {
+                "debug_image": f"row{row_idx + 1}_digit_norm",
+                "save_name": f"row{row_idx + 1}_digit_norm.png",
+                "shape": list(norm_crop.shape[:2]) if norm_crop is not None else None,
+            },
             "quantity_x": list(selected_count_x),
         })
 
     parts = [{"name": name, "count": int(name_to_count[name])} for name in PART_NAMES]
     counts_recognized = any(p["count"] >= 0 for p in parts)
     all_counts_recognized = all(p["count"] >= 0 for p in parts)
-    all_parts_recognized = all(r["part_name"] in PART_NAMES for r in row_results)
+    recognized_part_names = [r["part_name"] for r in row_results if r["part_name"] in PART_NAMES]
+    all_parts_recognized = (
+        len(recognized_part_names) == N_ROWS
+        and len(set(recognized_part_names)) == N_ROWS
+    )
 
     debug_bboxes_img = {
         "monitor_bbox": monitor_bbox,
@@ -1172,6 +1581,12 @@ def process_frame_template_icon_digit(
             "value": int(row["digit_value"]),
             "y": round(float(y_center), 4),
             "confidence": round(float(row["digit_confidence"]), 3),
+            "scores": row.get("digit_scores", {}),
+            "top1": row.get("digit_top1", {}),
+            "top2": row.get("digit_top2", {}),
+            "margin": round(float(row.get("digit_margin", 0.0)), 4),
+            "rejected_reason": row.get("digit_rejected_reason", ""),
+            "missing_template_digits": row.get("digit_missing_template_digits", []),
             "bbox": _bbox_to_list(bbox),
             "count_x": list(selected_count_x),
         })
@@ -1195,6 +1610,9 @@ def process_frame_template_icon_digit(
     debug = {
         "icon_confidences": [round(float(r["icon_confidence"]), 4) for r in row_results],
         "digit_confidences": [round(float(r["digit_confidence"]), 4) for r in row_results],
+        "digit_template_counts": {
+            str(d): len(digit_templates.get(str(d), [])) for d in VALID_DIGITS
+        },
         "row_order_fallback_used": bool(row_order_fallback_used),
         "rows": row_results,
         "selected_quantity_x": list(selected_count_x),
@@ -1222,6 +1640,7 @@ def process_frame_template_icon_digit(
         "debug_count_col_candidates": evaluated_candidates,
         "debug_mode": f"{monitor_mode}_{content_mode}_{table_mode}",
         "row_index_fallback": bool(row_order_fallback_used),
+        "raw_parts_before_aggregation": parts,
     }
     if debug_images:
         count_col, _count_bbox = _crop_rel(table_crop, selected_count_x, (0.0, 1.0))
@@ -1234,9 +1653,26 @@ def process_frame_template_icon_digit(
             icon_crops=icon_crops,
             digit_crops=digit_crops,
             digit_blob_crops=digit_blob_crops,
+            digit_binary_crops=digit_binary_crops,
+            digit_norm_crops=digit_norm_crops,
             row_results=row_results,
             debug_view=debug_view,
         )
+        for idx in range(N_ROWS):
+            row_no = idx + 1
+            if idx < len(digit_crops) and digit_crops[idx] is not None:
+                images[f"row{row_no}_digit_cell"] = digit_crops[idx]
+            raw_img = None
+            if idx < len(selected_digit_eval):
+                raw_img = selected_digit_eval[idx].get("detail", {}).get("raw_crop")
+            if raw_img is None and idx < len(digit_crops):
+                raw_img = digit_crops[idx]
+            if raw_img is not None:
+                images[f"row{row_no}_digit_raw"] = raw_img
+            if idx < len(digit_binary_crops) and digit_binary_crops[idx] is not None:
+                images[f"row{row_no}_digit_binary"] = digit_binary_crops[idx]
+            if idx < len(digit_norm_crops) and digit_norm_crops[idx] is not None:
+                images[f"row{row_no}_digit_norm"] = digit_norm_crops[idx]
         images["name_col"] = name_col
         images["count_col"] = count_col
         result["_debug_images"] = images

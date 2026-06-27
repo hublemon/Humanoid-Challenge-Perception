@@ -58,7 +58,8 @@ class MonitorOCRNode(Node):
         self.declare_parameter('debug_save_every_n', 10)
         self.declare_parameter('icon_match_threshold', 0.45)
         self.declare_parameter('digit_match_threshold', 0.45)
-        self.declare_parameter('allow_row_order_fallback', True)
+        self.declare_parameter('allow_row_order_fallback', False)
+        self.declare_parameter('template_root', '')
         self.declare_parameter(
             'quantity_x_candidates',
             '[[0.74, 0.99], [0.76, 0.99], [0.78, 0.99], [0.80, 0.995]]')
@@ -96,6 +97,7 @@ class MonitorOCRNode(Node):
             self._digit_match_threshold = 0.45
         self._allow_row_order_fallback = bool(
             self.get_parameter('allow_row_order_fallback').value)
+        self._template_root = str(self.get_parameter('template_root').value).strip()
         self._quantity_x_candidates = self._parse_quantity_x_candidates(
             self.get_parameter('quantity_x_candidates').value)
         self._debug_frame_id = 0
@@ -201,6 +203,10 @@ class MonitorOCRNode(Node):
                         Image, '/monitor_ocr/debug/digit_crops', 10),
                     'digit_blobs': self.create_publisher(
                         Image, '/monitor_ocr/debug/digit_blobs', 10),
+                    'digit_binaries': self.create_publisher(
+                        Image, '/monitor_ocr/debug/digit_binaries', 10),
+                    'digit_norms': self.create_publisher(
+                        Image, '/monitor_ocr/debug/digit_norms', 10),
                     'mosaic': self.create_publisher(
                         Image, '/monitor_ocr/debug/mosaic', 10),
                     'selected': self.create_publisher(
@@ -315,7 +321,8 @@ class MonitorOCRNode(Node):
                                 allow_row_order_fallback=self._allow_row_order_fallback,
                                 quantity_x_candidates=self._quantity_x_candidates,
                                 debug_images=self._debug_images_enabled,
-                                debug_view=self._debug_view)
+                                debug_view=self._debug_view,
+                                template_root=self._template_root or None)
                         else:
                             from monitor_ocr_a.ocr_pipeline_parts import process_frame_parts
                             raw = process_frame_parts(
@@ -403,6 +410,12 @@ class MonitorOCRNode(Node):
                     self._debug_save_dir,
                     f'frame_{self._debug_frame_id:06d}_{name}.png')
                 cv2.imwrite(path, img)
+            if (
+                self._debug_save_dir
+                and name.startswith('row')
+                and '_digit_' in name
+            ):
+                cv2.imwrite(os.path.join(self._debug_save_dir, f'{name}.png'), img)
 
     # ── 토픽 발행 ────────────────────────────────────────────────────────────
 

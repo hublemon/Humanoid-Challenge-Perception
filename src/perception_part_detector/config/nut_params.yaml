@@ -1,10 +1,16 @@
 nut_detector:
   ros__parameters:
+    part_name: nut
     camera_name: wrist_right
     image_topic: ""
     detections_topic: /detections
     debug_topic: /detector_debug_image/nut
     frame_id: ""
+    mode: simple
+    parent_class: ""
+    child_class: ""
+    index_by_x: false
+    fit_ellipse: false
 
     conf_threshold: 0.4
     iou_threshold: 0.5

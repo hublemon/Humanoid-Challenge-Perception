@@ -1,0 +1,28 @@
+green_button_detector:
+  ros__parameters:
+    camera_name: zed
+    image_topic: /zed/zed_node/rgb/image_rect_color
+    detections_topic: /detections/scenario_c/green_button
+    debug_topic: /detector_debug_image/green_button
+    mask_debug_topic: /green_button_mask_debug
+    frame_id: ''
+
+    class_id: 0
+    class_name: green_button
+
+    green_h_min: 35
+    green_h_max: 85
+    green_s_min: 40
+    green_v_min: 40
+    min_area_ratio: 0.0005
+    max_area_ratio: 0.20
+    min_width: 5
+    min_height: 5
+    min_fill_ratio: 0.30
+    morph_kernel: 5
+    bbox_margin_px: 2
+    min_confidence: 0.30
+
+    publish_debug_image: true
+    publish_mask_debug: false
+    log_detections: true

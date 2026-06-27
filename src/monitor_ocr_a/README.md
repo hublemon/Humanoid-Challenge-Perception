@@ -139,6 +139,12 @@ monitor_ocr_a/
 ## 파라미터
 
 ```bash
+# launch 파일로 실행 (launch 파일명은 .launch.py까지 입력)
+ros2 launch monitor_ocr_a monitor_ocr_a.launch.py parts_mode:=true parts_reader_backend:=template_icon_digit debug_images:=true debug_view:=mosaic debug_save_dir:=/tmp/monitor_ocr_debug allow_row_order_fallback:=false
+
+# 노드 이름과 맞춘 alias launch 파일도 제공
+ros2 launch monitor_ocr_a monitor_ocr_a_node.launch.py parts_mode:=true
+
 # 부품 수량 테이블 모드
 ros2 run monitor_ocr_a monitor_ocr_a_node --ros-args -p parts_mode:=true -p ocr_mode:=korean_only
 

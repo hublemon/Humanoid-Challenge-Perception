@@ -18,6 +18,7 @@ PRESET = TargetPreset(
     default_out_pose_topic='/perception/zed/green_button_center',
     target_mode='surface',
     default_debug_topic='/perception/zed/debug/green_button_center_image',
+    default_detections_msg_type='single',
 )
 
 

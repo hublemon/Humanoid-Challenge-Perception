@@ -20,6 +20,7 @@ def generate_launch_description():
     icon_match_threshold = LaunchConfiguration('icon_match_threshold')
     digit_match_threshold = LaunchConfiguration('digit_match_threshold')
     allow_row_order_fallback = LaunchConfiguration('allow_row_order_fallback')
+    template_root = LaunchConfiguration('template_root')
     quantity_x_candidates = LaunchConfiguration('quantity_x_candidates')
 
     return LaunchDescription([
@@ -77,7 +78,11 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'allow_row_order_fallback',
-            default_value='true',
+            default_value='false',
+        ),
+        DeclareLaunchArgument(
+            'template_root',
+            default_value='',
         ),
         DeclareLaunchArgument(
             'quantity_x_candidates',
@@ -103,6 +108,7 @@ def generate_launch_description():
                 'icon_match_threshold': ParameterValue(icon_match_threshold, value_type=float),
                 'digit_match_threshold': ParameterValue(digit_match_threshold, value_type=float),
                 'allow_row_order_fallback': ParameterValue(allow_row_order_fallback, value_type=bool),
+                'template_root': ParameterValue(template_root, value_type=str),
                 'quantity_x_candidates': ParameterValue(quantity_x_candidates, value_type=str),
             }],
         ),

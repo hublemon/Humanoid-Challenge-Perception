@@ -1,0 +1,15 @@
+wheel_hole_detector:
+  ros__parameters:
+    part_name: wheel_hole
+    head_topic: /zed/zed_node/rgb/image_rect_color
+    wrist_left_topic: /camera_left/camera_left/color/image_rect_raw
+    wrist_right_topic: /camera_right/camera_right/color/image_rect_raw
+    detections_topic: /detections/scenario_d/wheel_hole
+    mode: simple
+    parent_class: ''
+    child_class: ''
+    index_by_x: false
+    fit_ellipse: false
+    conf_threshold: 0.5
+    iou_threshold: 0.35
+    imgsz: 640

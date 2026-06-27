@@ -36,6 +36,30 @@ from monitor_ocr_c.ocr_pipeline_parts import (
 from monitor_ocr_c.paddle_compat import ocr_run
 
 
+PART_NAMES_EN = ["FLANGE NUT", "GEAR RING", "SPACER RING", "HEX NUT", "DOME NUT"]
+_EN_TO_KO = {
+    "FLANGE NUT":  "플랜지 너트",
+    "GEAR RING":   "기어 링",
+    "SPACER RING": "스페이서 링",
+    "HEX NUT":     "육각 너트",
+    "DOME NUT":    "돔 너트",
+}
+_EN_NAME_THRESH = 0.65
+_EN_MARGIN_THRESH = 0.10
+
+
+def _match_part_name_en(raw: str) -> tuple:
+    """영어 OCR 텍스트를 PART_NAMES_EN으로 퍼지 매칭. (ko_name, ratio, margin) 반환."""
+    upper = raw.upper()
+    scored = sorted(
+        ((difflib.SequenceMatcher(None, upper, n).ratio(), n) for n in PART_NAMES_EN),
+        reverse=True,
+    )
+    best_ratio, best_en = scored[0]
+    second_ratio = scored[1][0] if len(scored) > 1 else 0.0
+    return _EN_TO_KO[best_en], best_ratio, best_ratio - second_ratio
+
+
 PEG_COUNT = 4
 
 # 부품명(한글) 라벨 영역 y 비율 (콘텐츠 bbox 기준 — 이제 타이틀 바 포함된 전체
@@ -138,13 +162,27 @@ def _group_rows(items: list, tol: float) -> list:
     return rows
 
 
-def _recog_peg_name(ocr_kor, crop) -> tuple:
-    """Peg 칸의 이름 영역 crop → 한글 토큰만 모아 PART_NAMES 퍼지 매칭. (name, ratio) 반환."""
+def _recog_peg_name(ocr_kor, crop, ocr_en=None) -> tuple:
+    """Peg 칸 crop → 영어 OCR 우선, 실패 시 한글 OCR 폴백. (name, ratio) 반환."""
     if crop.size == 0:
         return "", 0.0
 
-    row_tol = max(5.0, crop.shape[0] * 0.18)
+    name_eng = ocr_en if ocr_en is not None else ocr_kor
 
+    for scale in (_SC_NAME, 2):
+        for preproc in (_preprocess, _preprocess_binarize):
+            best_name, best_ratio, best_margin = "", 0.0, 0.0
+            for _box, (text, conf) in ocr_run(name_eng, preproc(crop, scale)):
+                tok = text.strip()
+                if conf < _NAME_CONF_THRESH or len(tok) < 3:
+                    continue
+                name, ratio, margin = _match_part_name_en(tok)
+                if ratio > best_ratio:
+                    best_name, best_ratio, best_margin = name, ratio, margin
+            if best_ratio >= _EN_NAME_THRESH and best_margin >= _EN_MARGIN_THRESH:
+                return best_name, best_ratio
+
+    row_tol = max(5.0, crop.shape[0] * 0.18)
     for scale in (_SC_NAME, 2):
         items = []
         for preproc in (_preprocess, _preprocess_binarize):
@@ -220,7 +258,7 @@ def process_frame_sequence(ocr_kor, ocr_en, img) -> dict:
     for i in range(PEG_COUNT):
         x1 = max(0, int(bx + peg_xs[i]     * bw))
         x2 = min(W, int(bx + peg_xs[i + 1] * bw))
-        name, _ratio = _recog_peg_name(ocr_kor, work_img[ny1:ny2, x1:x2])
+        name, _ratio = _recog_peg_name(ocr_kor, work_img[ny1:ny2, x1:x2], ocr_en=ocr_en)
         sequence.append(name)
 
     return {

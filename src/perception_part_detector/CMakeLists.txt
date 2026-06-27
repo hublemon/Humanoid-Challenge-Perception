@@ -26,9 +26,9 @@ install(PROGRAMS
 )
 
 install(PROGRAMS
-  perception_part_detector/nut_detector_node.py
+  perception_part_detector/detector_node.py
   DESTINATION lib/${PROJECT_NAME}
-  RENAME nut_detector_node
+  RENAME detector
 )
 
 install(PROGRAMS
@@ -37,11 +37,19 @@ install(PROGRAMS
   RENAME peg_detector_node
 )
 
+install(PROGRAMS
+  perception_part_detector/green_button_color_detector_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME green_button_color_detector_node
+)
+
 install(DIRECTORY
   launch
   config
   weights
   DESTINATION share/${PROJECT_NAME}
+  PATTERN "__pycache__" EXCLUDE
+  PATTERN "*.pyc" EXCLUDE
 )
 
 ament_package()

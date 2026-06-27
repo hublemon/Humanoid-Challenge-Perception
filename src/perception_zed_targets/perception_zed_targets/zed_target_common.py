@@ -24,7 +24,7 @@ from cv_bridge import CvBridge
 from geometry_msgs.msg import PointStamped, PoseStamped
 import message_filters
 import numpy as np
-from perception_part_detector.msg import PartDetectionArray
+from perception_part_detector.msg import PartDetection, PartDetectionArray
 import rclpy
 from rclpy.duration import Duration
 from rclpy.node import Node
@@ -45,6 +45,7 @@ class TargetPreset:
     default_out_pose_topic: str
     target_mode: str
     default_debug_topic: str
+    default_detections_msg_type: str = 'array'
 
 
 class ZedTargetCenterNode(Node):
@@ -60,6 +61,10 @@ class ZedTargetCenterNode(Node):
         self.declare_parameter('rgb_info_topic', '/zed/zed_node/rgb/camera_info')
         self.declare_parameter('depth_info_topic', '/zed/zed_node/depth/camera_info')
         self.declare_parameter('detections_topic', preset.default_detections_topic)
+        self.declare_parameter(
+            'detections_msg_type',
+            preset.default_detections_msg_type,
+        )
         self.declare_parameter('out_pose_topic', preset.default_out_pose_topic)
         self.declare_parameter('base_frame', 'base_link')
         self.declare_parameter('camera_frame', '')
@@ -127,6 +132,7 @@ class ZedTargetCenterNode(Node):
         self.rgb_info_topic = gp('rgb_info_topic').value
         self.depth_info_topic = gp('depth_info_topic').value
         self.detections_topic = gp('detections_topic').value
+        self.detections_msg_type = str(gp('detections_msg_type').value).lower()
         self.out_pose_topic = gp('out_pose_topic').value
         self.base_frame = gp('base_frame').value
         self.camera_frame = gp('camera_frame').value
@@ -211,19 +217,29 @@ class ZedTargetCenterNode(Node):
             allow_headerless=True)
         self.sync.registerCallback(self.synced_cb)
 
-        self.sub_det = self.create_subscription(
-            PartDetectionArray, self.detections_topic, self.detections_cb, 10)
+        if self.detections_msg_type in ('single', 'part_detection', 'partdetection'):
+            self.sub_det = self.create_subscription(
+                PartDetection, self.detections_topic, self.detection_cb, 10)
+        else:
+            self.sub_det = self.create_subscription(
+                PartDetectionArray, self.detections_topic, self.detections_cb, 10)
 
         self.get_logger().info(
             f'{self.preset.node_name} ready. target_class={self.target_class!r}, '
             f'mode={self.preset.target_mode}, detections={self.detections_topic}, '
+            f'detections_msg_type={self.detections_msg_type}, '
             f'out={self.out_pose_topic}, tf_mode={self.tf_lookup_mode}, '
             f'tf_timeout={self.tf_timeout_sec:.3f}s')
 
     def detections_cb(self, msg: PartDetectionArray) -> None:
         """Store the latest detector result array."""
         with self._lock:
-            self._latest_detections = msg
+            self._latest_detections = list(msg.detections)
+
+    def detection_cb(self, msg: PartDetection) -> None:
+        """Store the latest single detector result."""
+        with self._lock:
+            self._latest_detections = [msg]
 
     def synced_cb(self, rgb_msg, depth_msg, rgb_info, depth_info) -> None:
         """Process one synchronized RGB/depth/CameraInfo tuple."""
@@ -232,12 +248,12 @@ class ZedTargetCenterNode(Node):
             return
 
         with self._lock:
-            det_msg = self._latest_detections
-        if det_msg is None:
+            detections = self._latest_detections
+        if detections is None:
             self._warn('No detections yet; skipping.', 5.0)
             return
 
-        det = self._select_detection(det_msg.detections)
+        det = self._select_detection(detections)
         if det is None:
             self._warn(f'No valid {self.target_class!r} detection.', 2.0)
             self._publish_debug(rgb_msg, None, None, None, False, 'no detection')
