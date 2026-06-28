@@ -1,0 +1,68 @@
+wrist_pipe_top_centers:
+  ros__parameters:
+    # Wrist RealSense RGB/depth are NOT aligned.
+    rgb_topic: /camera_right/camera_right/color/image_rect_raw
+    depth_topic: /camera_right/camera_right/depth/image_rect_raw
+    rgb_info_topic: /camera_right/camera_right/color/camera_info
+    depth_info_topic: /camera_right/camera_right/depth/camera_info
+    detections_topic: /detections
+    out_poses_topic: /perception/wrist/pipe_top_centers
+
+    base_frame: base_link
+    rgb_frame: ""
+    depth_frame: ""
+
+    camera_name: wrist_right
+    opening_class: pipe_opening
+    min_confidence: 0.3
+    expected_count: 4
+    require_expected_count: true
+    limit_to_expected_count: true
+    bbox_format: xyxy
+    opening_min_bbox_area_px: 20.0
+    opening_max_bbox_area_px: 50000.0
+
+    depth_scale: 0.001
+    invalid_depth_values: [0, 65535]
+    min_depth_m: 0.10
+    max_depth_m: 3.0
+    pixel_step: 1
+
+    # depth optical frame -> color optical frame. TF is tried first; this is fallback.
+    use_tf_for_extrinsics: true
+    extrinsics_rotation: [0.9999939203262329, -0.0015899674035608768, -0.003109483979642391,
+                          0.0015913281822577119, 0.9999986290931702, 0.00043518951861187816,
+                          0.003108787816017866, -0.00044013507431373, 0.9999950528144836]
+    extrinsics_translation: [-9.677278285380453e-06, 1.0000000656873453e-05, 1.0000000656873453e-05]
+
+    mask_erosion_px: 0
+    ellipse_min_area_px: 20.0
+    ellipse_max_area_px: 20000.0
+    ellipse_min_aspect: 0.25
+    ellipse_outer_scale: 1.25
+    ellipse_inner_scale: 0.60
+    intersect_ring_with_detection_mask: false
+    use_detector_center: true
+    center_max_offset_ratio: 0.35
+
+    use_plane_fit: true
+    plane_fit_min_points: 20
+    min_ring_valid_points: 10
+    plane_outlier_m: 0.015
+    plane_max_mean_residual_m: 0.010
+    rim_depth_percentile: 35.0
+    max_base_z_spread_m: 0.10
+
+    sort_output_by: image_u
+    sort_reverse: false
+    sync_queue_size: 10
+    sync_slop: 0.10
+
+    # Timestamp/future extrapolation fix. Wrist is nearly fixed during perception,
+    # so use latest TF with a short timeout by default.
+    tf_lookup_mode: latest       # latest | stamped | stamped_then_latest
+    tf_timeout_sec: 0.05
+    max_future_stamp_sec: 0.03
+    allow_latest_tf_fallback: true
+    output_stamp_policy: now     # now | rgb | depth
+    log_targets: true
