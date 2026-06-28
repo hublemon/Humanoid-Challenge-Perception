@@ -5,7 +5,7 @@ wrist_pipe_top_centers:
     depth_topic: /camera_right/camera_right/depth/image_rect_raw
     rgb_info_topic: /camera_right/camera_right/color/camera_info
     depth_info_topic: /camera_right/camera_right/depth/camera_info
-    detections_topic: /detections
+    detections_topic: /detections/scenario_c/pipe
     out_poses_topic: /perception/wrist/pipe_top_centers
 
     base_frame: base_link

@@ -12,12 +12,16 @@ import cv2
 import numpy as np
 import rclpy
 from ament_index_python.packages import get_package_share_directory
-from cv_bridge import CvBridge
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
 from ultralytics import YOLO
 
+from perception_part_detector.image_utils import (
+    cv2_to_image_msg,
+    draw_labeled_bbox,
+    image_msg_to_bgr,
+)
 from perception_part_detector.msg import PartDetection, PartDetectionArray
 
 
@@ -60,7 +64,6 @@ class PegDetectorNode(Node):
 
         self.get_logger().info(f'Loading peg model from {model_path}...')
         self.model = YOLO(model_path)
-        self.bridge = CvBridge()
 
         self.image_sub = self.create_subscription(
             Image,
@@ -87,7 +90,7 @@ class PegDetectorNode(Node):
 
     def image_cb(self, msg: Image) -> None:
         try:
-            img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+            img = image_msg_to_bgr(msg)
         except Exception as exc:  # noqa: BLE001
             self.get_logger().error(f'Failed to convert image message: {exc}')
             return
@@ -210,22 +213,15 @@ class PegDetectorNode(Node):
         for det in detections:
             pts = np.array(list(zip(det.mask_x, det.mask_y)), dtype=np.int32)
             if pts.shape[0] >= 2:
-                cv2.polylines(overlay, [pts], True, (0, 255, 0), 2)
-            cv2.putText(
-                overlay,
-                det.class_name,
-                (int(det.center_x), int(det.center_y)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (0, 255, 0),
-                2,
-                cv2.LINE_AA,
-            )
+                cv2.polylines(overlay, [pts], True, (0, 255, 0), 1)
+            if len(det.bbox) == 4:
+                label = f'{det.class_name} {det.confidence:.2f}'
+                draw_labeled_bbox(overlay, det.bbox, label, (0, 255, 0))
 
     def _publish_debug(self, overlay: np.ndarray, header) -> None:
         if self.debug_pub is None:
             return
-        debug_msg = self.bridge.cv2_to_imgmsg(overlay, encoding='bgr8')
+        debug_msg = cv2_to_image_msg(overlay, encoding='bgr8')
         debug_msg.header = header
         self.debug_pub.publish(debug_msg)
 

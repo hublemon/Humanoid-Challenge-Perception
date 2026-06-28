@@ -24,6 +24,7 @@ def generate_launch_description():
         DeclareLaunchArgument("tray_process_interval_sec", default_value="0.10"),
         DeclareLaunchArgument("tray_stable_frames", default_value="3"),
         DeclareLaunchArgument("tray_min_hits", default_value="2"),
+        DeclareLaunchArgument("publish_debug_image", default_value="true"),
         DeclareLaunchArgument("require_complete_ocr", default_value="true"),
         DeclareLaunchArgument("mock_monitor_ocr", default_value="false"),
         DeclareLaunchArgument("tray_python", default_value="/ws/yolo_venv/bin/python3"),
@@ -63,6 +64,10 @@ def generate_launch_description():
                 "tray_min_hits": ParameterValue(
                     LaunchConfiguration("tray_min_hits"),
                     value_type=int,
+                ),
+                "publish_debug_image": ParameterValue(
+                    LaunchConfiguration("publish_debug_image"),
+                    value_type=bool,
                 ),
                 "require_complete_ocr": ParameterValue(
                     LaunchConfiguration("require_complete_ocr"),

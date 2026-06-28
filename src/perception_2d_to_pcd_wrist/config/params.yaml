@@ -13,6 +13,8 @@ wrist_task_grasp_planner_node:
 
     out_pose_topic: "/perception/wrist/target_one_pose"
     out_target_detection_topic: "/perception/wrist/target_one_detection"
+    debug_image_topic: "/perception/wrist/target_debug_image"
+    publish_debug_image: true
 
     # Frames.
     base_frame: "base_link"

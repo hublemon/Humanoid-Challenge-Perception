@@ -10,7 +10,7 @@ find_package(rosidl_default_generators REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(rclpy REQUIRED)
-find_package(cv_bridge REQUIRED)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/PartDetection.msg"
@@ -19,6 +19,18 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 )
 
 ament_export_dependencies(rosidl_default_runtime)
+
+execute_process(
+  COMMAND "${Python3_EXECUTABLE}" -c "import sys; print(f'lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages')"
+  OUTPUT_VARIABLE PYTHON_INSTALL_DIR
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+
+install(DIRECTORY perception_part_detector/
+  DESTINATION ${PYTHON_INSTALL_DIR}/${PROJECT_NAME}
+  FILES_MATCHING PATTERN "*.py"
+)
+
 install(PROGRAMS
   detector_node.py
   DESTINATION lib/${PROJECT_NAME}
@@ -41,6 +53,12 @@ install(PROGRAMS
   perception_part_detector/green_button_color_detector_node.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME green_button_color_detector_node
+)
+
+install(PROGRAMS
+  perception_part_detector/bolt_top_mock_detector_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME bolt_top_mock_detector
 )
 
 install(DIRECTORY

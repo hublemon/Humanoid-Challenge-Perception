@@ -58,7 +58,7 @@ def generate_launch_description() -> LaunchDescription:
         ),
         DeclareLaunchArgument(
             'detections_topic',
-            default_value='/detections',
+            default_value='/detections/scenario_c/pipe',
             description='PartDetectionArray topic.',
         ),
         DeclareLaunchArgument(

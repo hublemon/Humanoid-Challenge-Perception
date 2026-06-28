@@ -16,4 +16,7 @@ nut_detector:
     iou_threshold: 0.5
     imgsz: 640
     publish_debug_image: true
+    smoothing_window_sec: 0.3
+    smoothing_min_ratio: 0.5
+    smoothing_match_dist: 40.0
     log_detections: true

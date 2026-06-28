@@ -27,7 +27,6 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
 import message_filters
-from cv_bridge import CvBridge
 
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import String
@@ -36,6 +35,11 @@ from geometry_msgs.msg import PointStamped, Pose, PoseArray, PoseStamped
 import tf2_ros
 from tf2_geometry_msgs import do_transform_point
 
+from perception_part_detector.image_utils import (
+    cv2_to_image_msg,
+    image_msg_to_bgr,
+    image_msg_to_depth,
+)
 from perception_part_detector.msg import PartDetectionArray
 from perception_2d_to_pcd_wrist import wrist_reprojection as wr
 
@@ -191,7 +195,7 @@ class WristTaskGraspPlannerNode(Node):
         self.declare_parameter('log_top_k', 5)
         self.declare_parameter('temporal_smoothing_enable', True)
         self.declare_parameter('temporal_window_sec', 0.8)
-        self.declare_parameter('temporal_min_observations', 2)
+        self.declare_parameter('temporal_min_observations', 3)
         self.declare_parameter('temporal_position_gate_m', 0.10)
         self.declare_parameter('temporal_max_history', 50)
         self.declare_parameter('republish_last_pose_hz', 0.0)
@@ -308,7 +312,6 @@ class WristTaskGraspPlannerNode(Node):
         self.republish_last_pose_hz = float(gp('republish_last_pose_hz').value)
         self.hold_last_pose_sec = float(gp('hold_last_pose_sec').value)
 
-        self.bridge = CvBridge()
         self.K_rgb = None
         self.K_depth = None
         self.rgb_frame = None
@@ -337,7 +340,9 @@ class WristTaskGraspPlannerNode(Node):
             self.out_target_detection_topic,
             10,
         )
-        self.pub_debug_image = self.create_publisher(Image, self.debug_image_topic, 10)
+        self.pub_debug_image = None
+        if self.publish_debug_image:
+            self.pub_debug_image = self.create_publisher(Image, self.debug_image_topic, 10)
         self.pub_all_poses = self.create_publisher(PoseArray, self.out_all_poses_topic, 10)
         self.republish_timer = None
         if self.republish_last_pose_hz > 0.0:
@@ -422,9 +427,8 @@ class WristTaskGraspPlannerNode(Node):
         self.depth_frame = self.depth_frame_override or depth_info.header.frame_id
 
         try:
-            self.latest_rgb = self.bridge.imgmsg_to_cv2(rgb_msg, desired_encoding='bgr8')
-            self.latest_depth = self.bridge.imgmsg_to_cv2(
-                depth_msg, desired_encoding='passthrough')
+            self.latest_rgb = image_msg_to_bgr(rgb_msg)
+            self.latest_depth = image_msg_to_depth(depth_msg)
         except Exception as exc:
             self.get_logger().error(f'image conversion failed: {exc}')
             return
@@ -586,11 +590,15 @@ class WristTaskGraspPlannerNode(Node):
         return u, v
 
     def _publish_debug_image(self, debug_bgr, stamp, frame_id) -> None:
-        if not self.publish_debug_image or debug_bgr is None:
+        if (
+            not self.publish_debug_image
+            or self.pub_debug_image is None
+            or debug_bgr is None
+        ):
             return
 
         try:
-            msg = self.bridge.cv2_to_imgmsg(debug_bgr, encoding='bgr8')
+            msg = cv2_to_image_msg(debug_bgr, encoding='bgr8')
         except Exception as exc:
             self.get_logger().warn(
                 f'Failed to convert target debug image: {exc}',

@@ -1,0 +1,1 @@
+Preserve the pre-flattened local package copy while colcon builds the new root package.

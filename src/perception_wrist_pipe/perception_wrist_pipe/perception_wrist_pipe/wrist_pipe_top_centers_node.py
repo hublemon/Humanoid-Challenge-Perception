@@ -9,7 +9,7 @@ therefore reprojects depth into the RGB image plane before applying the
 
 Expected detector input
 -----------------------
-``/detections`` should contain validated ``pipe_opening`` detections from the
+``/detections/scenario_c/pipe`` should contain validated ``pipe_opening`` detections from the
 wrist camera, typically four detections per frame:
 
 - ``class_name``: ``pipe_opening``
@@ -94,7 +94,7 @@ class WristPipeTopCentersNode(Node):
         self.declare_parameter('depth_topic', '/camera_right/camera_right/depth/image_rect_raw')
         self.declare_parameter('rgb_info_topic', '/camera_right/camera_right/color/camera_info')
         self.declare_parameter('depth_info_topic', '/camera_right/camera_right/depth/camera_info')
-        self.declare_parameter('detections_topic', '/detections')
+        self.declare_parameter('detections_topic', '/detections/scenario_c/pipe')
         self.declare_parameter('out_poses_topic', '/perception/wrist/pipe_top_centers')
         self.declare_parameter('base_frame', 'base_link')
         self.declare_parameter('rgb_frame', '')

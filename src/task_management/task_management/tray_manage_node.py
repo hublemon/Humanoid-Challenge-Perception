@@ -15,6 +15,7 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image, RegionOfInterest
 from std_msgs.msg import String
 
+from task_management.image_utils import cv2_to_image_msg, image_msg_to_bgr
 from task_management.name_utils import CANONICAL_PARTS, canonical_part_name
 
 
@@ -50,6 +51,7 @@ class TrayManageNode(Node):
         self.declare_parameter("tray_debug_mask_topic", "/perception/tray_mask_debug")
         self.declare_parameter("tray_debug_image_topic", "/perception/tray_debug_image")
         self.declare_parameter("publish_tray_debug", True)
+        self.declare_parameter("publish_debug_image", True)
         self.declare_parameter("tray_max_age_sec", 1.0)
         self.declare_parameter("tray_process_interval_sec", 0.10)
         self.declare_parameter("tray_stable_frames", 3)
@@ -99,7 +101,11 @@ class TrayManageNode(Node):
         self.tray_morph_kernel = int(self.get_parameter("tray_morph_kernel").value)
         self.tray_debug_mask_topic = str(self.get_parameter("tray_debug_mask_topic").value)
         self.tray_debug_image_topic = str(self.get_parameter("tray_debug_image_topic").value)
-        self.publish_tray_debug = bool(self.get_parameter("publish_tray_debug").value)
+        self.publish_debug_image = bool(self.get_parameter("publish_debug_image").value)
+        self.publish_tray_debug = (
+            bool(self.get_parameter("publish_tray_debug").value)
+            and self.publish_debug_image
+        )
         self.tray_max_age_sec = float(self.get_parameter("tray_max_age_sec").value)
         self.tray_process_interval_sec = float(self.get_parameter("tray_process_interval_sec").value)
         self.tray_stable_frames = max(1, int(self.get_parameter("tray_stable_frames").value))
@@ -122,9 +128,6 @@ class TrayManageNode(Node):
         self._last_tray_search_roi = None
         self._last_tray_color_candidates_debug = []
 
-        from cv_bridge import CvBridge
-
-        self.bridge = CvBridge()
         self.tray_model = None
         if self.tray_detector_backend in {"yolo", "hybrid"}:
             from ultralytics import YOLO
@@ -140,10 +143,13 @@ class TrayManageNode(Node):
             self.tray_roi_topic,
             10,
         )
-        self.pub_tray_mask_debug = self.create_publisher(
-            Image, self.tray_debug_mask_topic, 10)
-        self.pub_tray_debug_image = self.create_publisher(
-            Image, self.tray_debug_image_topic, 10)
+        self.pub_tray_mask_debug = None
+        self.pub_tray_debug_image = None
+        if self.publish_tray_debug:
+            self.pub_tray_mask_debug = self.create_publisher(
+                Image, self.tray_debug_mask_topic, 10)
+            self.pub_tray_debug_image = self.create_publisher(
+                Image, self.tray_debug_image_topic, 10)
 
         self.create_subscription(String, self.ocr_result_topic, self.ocr_callback, 10)
         self.create_subscription(Image, self.image_topic, self.image_callback, qos_profile_sensor_data)
@@ -160,7 +166,8 @@ class TrayManageNode(Node):
             "TrayManageNode ready. "
             f"tray_detector_backend={self.tray_detector_backend}, "
             f"image_topic={self.image_topic}, ocr_result_topic={self.ocr_result_topic}, "
-            f"task_list_topic={self.task_list_topic}, tray_roi_topic={self.tray_roi_topic}"
+            f"task_list_topic={self.task_list_topic}, tray_roi_topic={self.tray_roi_topic}, "
+            f"publish_debug_image={self.publish_tray_debug}"
         )
 
     @staticmethod
@@ -196,7 +203,13 @@ class TrayManageNode(Node):
         self.publish_task_list()
 
     def set_mock_ocr_counts(self) -> None:
-        self.ocr_counts = {name: 1 for name in CANONICAL_PARTS}
+        self.ocr_counts = {
+            "flange nut": 1,
+            "gear ring": 1,
+            "spacer ring": 1,
+            "hex nut": 1,
+            "dom nut": 1,
+        }
         self.last_ocr_payload = {
             "frames_used": 1,
             "latest_screen_detected": True,
@@ -210,7 +223,7 @@ class TrayManageNode(Node):
         self.last_tray_process_time = now
 
         try:
-            img = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+            img = image_msg_to_bgr(msg)
         except Exception as exc:
             self.get_logger().warn(f"Tray image conversion failed: {exc}")
             return
@@ -325,7 +338,7 @@ class TrayManageNode(Node):
         contours = contours_result[-2]
 
         trays = []
-        debug_candidates = []
+        debug_candidates = [] if self.publish_tray_debug else None
         for contour in contours:
             area = float(cv2.contourArea(contour))
             area_ratio = area / image_area
@@ -351,28 +364,34 @@ class TrayManageNode(Node):
             }
 
             if area_ratio < self.tray_min_area_ratio:
-                debug_item["reason"] = "area_low"
-                debug_candidates.append(debug_item)
+                if debug_candidates is not None:
+                    debug_item["reason"] = "area_low"
+                    debug_candidates.append(debug_item)
                 continue
             if area_ratio > self.tray_max_area_ratio:
-                debug_item["reason"] = "area_high"
-                debug_candidates.append(debug_item)
+                if debug_candidates is not None:
+                    debug_item["reason"] = "area_high"
+                    debug_candidates.append(debug_item)
                 continue
             if bw < self.tray_min_width or bh < self.tray_min_height:
-                debug_item["reason"] = "size_low"
-                debug_candidates.append(debug_item)
+                if debug_candidates is not None:
+                    debug_item["reason"] = "size_low"
+                    debug_candidates.append(debug_item)
                 continue
             if fill_ratio < self.tray_min_fill_ratio:
-                debug_item["reason"] = "fill_low"
-                debug_candidates.append(debug_item)
+                if debug_candidates is not None:
+                    debug_item["reason"] = "fill_low"
+                    debug_candidates.append(debug_item)
                 continue
             if aspect_ratio < self.tray_min_aspect_ratio:
-                debug_item["reason"] = "aspect_low"
-                debug_candidates.append(debug_item)
+                if debug_candidates is not None:
+                    debug_item["reason"] = "aspect_low"
+                    debug_candidates.append(debug_item)
                 continue
             if aspect_ratio > self.tray_max_aspect_ratio:
-                debug_item["reason"] = "aspect_high"
-                debug_candidates.append(debug_item)
+                if debug_candidates is not None:
+                    debug_item["reason"] = "aspect_high"
+                    debug_candidates.append(debug_item)
                 continue
 
             score = self.score_tray_candidate(
@@ -385,7 +404,8 @@ class TrayManageNode(Node):
             )
             debug_item["accepted"] = True
             debug_item["score"] = score
-            debug_candidates.append(debug_item)
+            if debug_candidates is not None:
+                debug_candidates.append(debug_item)
             trays.append({
                 "class_id": 0,
                 "class_name": "blue_tray",
@@ -397,20 +417,25 @@ class TrayManageNode(Node):
             })
 
         trays.sort(key=lambda item: float(item.get("confidence", 0.0)), reverse=True)
-        debug_candidates.sort(
-            key=lambda item: (
-                bool(item.get("accepted", False)),
-                float(item.get("area_ratio", 0.0)),
-            ),
-            reverse=True,
-        )
-        self._last_tray_mask_debug = mask
-        self._last_tray_search_roi = search_roi
-        self._last_tray_color_candidates_debug = debug_candidates[:80]
+        if debug_candidates is not None:
+            debug_candidates.sort(
+                key=lambda item: (
+                    bool(item.get("accepted", False)),
+                    float(item.get("area_ratio", 0.0)),
+                ),
+                reverse=True,
+            )
+            self._last_tray_mask_debug = mask
+            self._last_tray_search_roi = search_roi
+            self._last_tray_color_candidates_debug = debug_candidates[:80]
         return trays
 
     def publish_tray_debug_images(self, msg: Image, img, trays, stable_trays) -> None:
-        if not self.publish_tray_debug:
+        if (
+            not self.publish_tray_debug
+            or self.pub_tray_mask_debug is None
+            or self.pub_tray_debug_image is None
+        ):
             return
 
         if self.tray_detector_backend in {"color", "hybrid"}:
@@ -501,12 +526,12 @@ class TrayManageNode(Node):
             )
 
         if mask is not None:
-            mask_msg = self.bridge.cv2_to_imgmsg(mask, encoding="mono8")
+            mask_msg = cv2_to_image_msg(mask, encoding="mono8")
             mask_msg.header = msg.header
             self.pub_tray_mask_debug.publish(mask_msg)
 
         if debug_img is not None:
-            debug_msg = self.bridge.cv2_to_imgmsg(debug_img, encoding="bgr8")
+            debug_msg = cv2_to_image_msg(debug_img, encoding="bgr8")
             debug_msg.header = msg.header
             self.pub_tray_debug_image.publish(debug_msg)
 

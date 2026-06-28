@@ -19,6 +19,12 @@ def generate_launch_description():
     debug_save_every_n = LaunchConfiguration('debug_save_every_n')
     icon_match_threshold = LaunchConfiguration('icon_match_threshold')
     digit_match_threshold = LaunchConfiguration('digit_match_threshold')
+    digit_hog_svm_model_path = LaunchConfiguration('digit_hog_svm_model_path')
+    icon_hog_svm_model_path = LaunchConfiguration('icon_hog_svm_model_path')
+    digit_hog_conf_threshold = LaunchConfiguration('digit_hog_conf_threshold')
+    digit_hog_margin_threshold = LaunchConfiguration('digit_hog_margin_threshold')
+    icon_hog_conf_threshold = LaunchConfiguration('icon_hog_conf_threshold')
+    icon_hog_margin_threshold = LaunchConfiguration('icon_hog_margin_threshold')
     allow_row_order_fallback = LaunchConfiguration('allow_row_order_fallback')
     template_root = LaunchConfiguration('template_root')
     quantity_x_candidates = LaunchConfiguration('quantity_x_candidates')
@@ -77,6 +83,30 @@ def generate_launch_description():
             default_value='0.45',
         ),
         DeclareLaunchArgument(
+            'digit_hog_svm_model_path',
+            default_value='',
+        ),
+        DeclareLaunchArgument(
+            'icon_hog_svm_model_path',
+            default_value='',
+        ),
+        DeclareLaunchArgument(
+            'digit_hog_conf_threshold',
+            default_value='0.55',
+        ),
+        DeclareLaunchArgument(
+            'digit_hog_margin_threshold',
+            default_value='0.18',
+        ),
+        DeclareLaunchArgument(
+            'icon_hog_conf_threshold',
+            default_value='0.55',
+        ),
+        DeclareLaunchArgument(
+            'icon_hog_margin_threshold',
+            default_value='0.18',
+        ),
+        DeclareLaunchArgument(
             'allow_row_order_fallback',
             default_value='false',
         ),
@@ -107,6 +137,12 @@ def generate_launch_description():
                 'debug_save_every_n': ParameterValue(debug_save_every_n, value_type=int),
                 'icon_match_threshold': ParameterValue(icon_match_threshold, value_type=float),
                 'digit_match_threshold': ParameterValue(digit_match_threshold, value_type=float),
+                'digit_hog_svm_model_path': ParameterValue(digit_hog_svm_model_path, value_type=str),
+                'icon_hog_svm_model_path': ParameterValue(icon_hog_svm_model_path, value_type=str),
+                'digit_hog_conf_threshold': ParameterValue(digit_hog_conf_threshold, value_type=float),
+                'digit_hog_margin_threshold': ParameterValue(digit_hog_margin_threshold, value_type=float),
+                'icon_hog_conf_threshold': ParameterValue(icon_hog_conf_threshold, value_type=float),
+                'icon_hog_margin_threshold': ParameterValue(icon_hog_margin_threshold, value_type=float),
                 'allow_row_order_fallback': ParameterValue(allow_row_order_fallback, value_type=bool),
                 'template_root': ParameterValue(template_root, value_type=str),
                 'quantity_x_candidates': ParameterValue(quantity_x_candidates, value_type=str),

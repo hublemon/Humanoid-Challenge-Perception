@@ -208,6 +208,10 @@ class FrameAggregatorParts:
             "debug_count_col_candidates": latest.get("debug_count_col_candidates"),
             "debug_mode":           latest.get("debug_mode"),
             "row_index_fallback":   latest.get("row_index_fallback", False),
+            "quad_confidence":      latest.get("quad_confidence"),
+            "warp_confidence":      latest.get("warp_confidence"),
+            "row_split_confidence": latest.get("row_split_confidence"),
+            "row_results":          latest.get("row_results"),
             "raw_parts_before_aggregation": latest.get("parts"),
             "aggregation_mode":      latest.get("aggregation_mode", "majority_window"),
         }
@@ -228,7 +232,7 @@ class FrameAggregatorParts:
                 **self._latest_debug_fields(latest),
             }
 
-        if latest.get("reader_backend") == "template_icon_digit":
+        if latest.get("reader_backend") in ("template_icon_digit", "homography_hog_svm"):
             parts = [
                 {
                     "name": PART_NAMES[i],
@@ -244,7 +248,7 @@ class FrameAggregatorParts:
             all_counts_recognized = (
                 all(p["count"] >= 0 for p in parts)
                 and bool(latest.get("all_parts_recognized", True)))
-            latest_with_mode = dict(latest, aggregation_mode="latest_template_frame")
+            latest_with_mode = dict(latest, aggregation_mode="latest_parts_reader_frame")
             return {
                 "frames_used":            len(hist),
                 "parts":                  parts,

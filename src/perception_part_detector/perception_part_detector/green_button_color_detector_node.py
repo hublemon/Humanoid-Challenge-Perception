@@ -7,11 +7,15 @@ from typing import List, Optional
 import cv2
 import numpy as np
 import rclpy
-from cv_bridge import CvBridge
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
 
+from perception_part_detector.image_utils import (
+    cv2_to_image_msg,
+    draw_labeled_bbox,
+    image_msg_to_bgr,
+)
 from perception_part_detector.msg import PartDetection
 
 
@@ -79,7 +83,6 @@ class GreenButtonColorDetectorNode(Node):
         self.publish_mask_debug = self.get_parameter('publish_mask_debug').value
         self.log_detections = self.get_parameter('log_detections').value
 
-        self.bridge = CvBridge()
         self.image_sub = self.create_subscription(
             Image,
             image_topic,
@@ -95,7 +98,7 @@ class GreenButtonColorDetectorNode(Node):
         if self.publish_debug_image:
             self.debug_pub = self.create_publisher(Image, debug_topic, 10)
         self.mask_debug_pub = None
-        if self.publish_mask_debug:
+        if self.publish_debug_image and self.publish_mask_debug:
             self.mask_debug_pub = self.create_publisher(Image, mask_debug_topic, 10)
 
         self.get_logger().info(
@@ -108,7 +111,7 @@ class GreenButtonColorDetectorNode(Node):
 
     def image_cb(self, msg: Image) -> None:
         try:
-            image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+            image = image_msg_to_bgr(msg)
         except Exception as exc:  # noqa: BLE001
             self.get_logger().error(f'Failed to convert image message: {exc}')
             return
@@ -265,8 +268,7 @@ class GreenButtonColorDetectorNode(Node):
         overlay = image.copy()
         if candidate is not None:
             x1, y1, x2, y2 = candidate.bbox
-            cv2.drawContours(overlay, [candidate.contour], -1, (0, 255, 0), 2)
-            cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 255, 255), 2)
+            cv2.drawContours(overlay, [candidate.contour], -1, (0, 255, 0), 1)
             cv2.circle(
                 overlay,
                 (int(round(candidate.center_x)), int(round(candidate.center_y))),
@@ -275,24 +277,15 @@ class GreenButtonColorDetectorNode(Node):
                 -1,
             )
             label = f'{self.class_name} {candidate.confidence:.2f}'
-            cv2.putText(
-                overlay,
-                label,
-                (x1, max(y1 - 8, 12)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (0, 255, 255),
-                2,
-                cv2.LINE_AA,
-            )
-        debug_msg = self.bridge.cv2_to_imgmsg(overlay, encoding='bgr8')
+            draw_labeled_bbox(overlay, (x1, y1, x2, y2), label, (0, 255, 255))
+        debug_msg = cv2_to_image_msg(overlay, encoding='bgr8')
         debug_msg.header = header
         self.debug_pub.publish(debug_msg)
 
     def _publish_mask_debug(self, mask: np.ndarray, header) -> None:
         if self.mask_debug_pub is None:
             return
-        mask_msg = self.bridge.cv2_to_imgmsg(mask, encoding='mono8')
+        mask_msg = cv2_to_image_msg(mask, encoding='mono8')
         mask_msg.header = header
         self.mask_debug_pub.publish(mask_msg)
 

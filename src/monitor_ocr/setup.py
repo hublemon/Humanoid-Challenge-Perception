@@ -25,6 +25,7 @@ setup(
         'console_scripts': [
             'monitor_ocr_node   = monitor_ocr.monitor_ocr_node:main',
             'monitor_ocr_viewer = monitor_ocr.viewer_node:main',
+            'ocr_result_logger  = monitor_ocr.ocr_result_logger_node:main',
         ],
     },
 )

@@ -54,6 +54,7 @@ bolt_top_center:
     rgb_info_topic: /zed/zed_node/rgb/camera_info
     depth_info_topic: /zed/zed_node/depth/camera_info
     detections_topic: /detections/scenario_d/bolt_top
+    detections_msg_type: array
     out_pose_topic: /perception/zed/bolt_top_center
     base_frame: base_link
     camera_frame: ""
@@ -102,6 +103,7 @@ wheel_hole_center:
     rgb_info_topic: /zed/zed_node/rgb/camera_info
     depth_info_topic: /zed/zed_node/depth/camera_info
     detections_topic: /detections/scenario_d/wheel_hole
+    detections_msg_type: array
     out_pose_topic: /perception/zed/wheel_hole_center
     base_frame: base_link
     camera_frame: ""
@@ -198,6 +200,7 @@ drill_handle_center:
     rgb_info_topic: /zed/zed_node/rgb/camera_info
     depth_info_topic: /zed/zed_node/depth/camera_info
     detections_topic: /detections/scenario_d/drill
+    detections_msg_type: array
     out_pose_topic: /perception/zed/drill_handle_center
     base_frame: base_link
     camera_frame: ""

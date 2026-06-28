@@ -16,12 +16,16 @@ import cv2
 import numpy as np
 import rclpy
 from ament_index_python.packages import get_package_share_directory
-from cv_bridge import CvBridge
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
 from ultralytics import YOLO
 
+from perception_part_detector.image_utils import (
+    cv2_to_image_msg,
+    draw_labeled_bbox,
+    image_msg_to_bgr,
+)
 from perception_part_detector.msg import PartDetection, PartDetectionArray
 
 
@@ -89,7 +93,6 @@ class PartDetectorNode(Node):
 
         self.get_logger().info(f'Loading YOLO model: {model_path}')
         self.model = YOLO(model_path)
-        self.bridge = CvBridge()
 
         self.detection_pub = self.create_publisher(PartDetectionArray, detections_topic, 10)
         self.debug_pub = None
@@ -112,7 +115,7 @@ class PartDetectorNode(Node):
 
     def image_cb(self, msg: Image) -> None:
         try:
-            img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+            img = image_msg_to_bgr(msg)
         except Exception as exc:  # noqa: BLE001
             self.get_logger().error(f'Failed to convert image message to OpenCV image: {exc}')
             return
@@ -130,7 +133,7 @@ class PartDetectorNode(Node):
         if self.frame_id_override:
             det_array.header.frame_id = self.frame_id_override
 
-        overlay = img.copy()
+        overlay = img.copy() if self.debug_pub is not None else None
         model_names = getattr(self.model, 'names', {}) or {}
 
         boxes = results.boxes if results.boxes is not None else []
@@ -141,7 +144,7 @@ class PartDetectorNode(Node):
             conf = float(box.conf.item()) if hasattr(box.conf, 'item') else float(box.conf)
             x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
             class_name = self._class_name(model_names, cls)
-            color = DEFAULT_COLORS[cls % len(DEFAULT_COLORS)]
+            color = DEFAULT_COLORS[cls % len(DEFAULT_COLORS)] if overlay is not None else None
 
             det = PartDetection()
             det.class_id = cls
@@ -159,7 +162,8 @@ class PartDetectorNode(Node):
                 det.mask_y = mask_xy[:, 1].astype(float).tolist()
                 det.center_x = float(np.mean(mask_xy[:, 0]))
                 det.center_y = float(np.mean(mask_xy[:, 1]))
-                self._draw_mask(overlay, mask_xy, color)
+                if overlay is not None:
+                    self._draw_mask(overlay, mask_xy, color)
             else:
                 det.mask_x = []
                 det.mask_y = []
@@ -167,7 +171,8 @@ class PartDetectorNode(Node):
                 det.center_y = float((y1 + y2) / 2.0)
 
             det_array.detections.append(det)
-            self._draw_bbox(overlay, x1, y1, x2, y2, color, class_name, conf)
+            if overlay is not None:
+                self._draw_bbox(overlay, x1, y1, x2, y2, color, class_name, conf)
 
             if self.log_detections:
                 self.get_logger().info(
@@ -178,8 +183,8 @@ class PartDetectorNode(Node):
 
         self.detection_pub.publish(det_array)
 
-        if self.debug_pub is not None:
-            debug_msg = self.bridge.cv2_to_imgmsg(overlay, encoding='bgr8')
+        if self.debug_pub is not None and overlay is not None:
+            debug_msg = cv2_to_image_msg(overlay, encoding='bgr8')
             debug_msg.header = det_array.header
             self.debug_pub.publish(debug_msg)
 
@@ -199,7 +204,7 @@ class PartDetectorNode(Node):
         mask_img = np.zeros_like(overlay)
         cv2.fillPoly(mask_img, [pts], color)
         cv2.addWeighted(mask_img, 0.35, overlay, 1.0, 0.0, dst=overlay)
-        cv2.polylines(overlay, [pts], isClosed=True, color=color, thickness=2)
+        cv2.polylines(overlay, [pts], isClosed=True, color=color, thickness=1)
 
     def _draw_bbox(
         self,
@@ -212,19 +217,8 @@ class PartDetectorNode(Node):
         class_name: str,
         confidence: float,
     ) -> None:
-        cv2.rectangle(overlay, (x1, y1), (x2, y2), color, 2)
-        label = f'[{self.camera_name}] {class_name} {confidence:.2f}'
-        y_text = max(y1 - 10, 20)
-        cv2.putText(
-            overlay,
-            label,
-            (x1, y_text),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
-            color,
-            2,
-            cv2.LINE_AA,
-        )
+        label = f'{class_name} {confidence:.2f}'
+        draw_labeled_bbox(overlay, (x1, y1, x2, y2), label, color)
 
 
 def main(args=None) -> None:

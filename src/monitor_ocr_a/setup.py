@@ -31,6 +31,7 @@ setup(
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name, ['best.pt']),
         ('share/' + package_name + '/launch', glob('launch/*.py')),
+        ('share/' + package_name + '/scripts', glob('scripts/*.py')),
     ] + template_data_files(),
     install_requires=['setuptools'],
     zip_safe=True,
@@ -43,6 +44,7 @@ setup(
         'console_scripts': [
             'monitor_ocr_a_node   = monitor_ocr_a.monitor_ocr_node:main',
             'monitor_ocr_a_viewer = monitor_ocr_a.viewer_node:main',
+            'a_command_snapshot_reader_node = monitor_ocr_a.a_command_snapshot_reader_node:main',
         ],
     },
 )

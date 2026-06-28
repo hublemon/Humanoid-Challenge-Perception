@@ -16,6 +16,7 @@ __pycache__/
 venv/
 ocr_venv/
 yolo_venv/
+vlm_venv/
 
 # Local caches and generated files
 paddlex_cache/
@@ -23,8 +24,12 @@ _incoming/
 .codex/
 .agents/
 .git-real/
+monitor_ocr_result_*.jsonl
 
 # Large generated/debug artifacts
+datasets/
+models/
+two_topic_captures/
 *.bag
 *.db3
 *.mcap

@@ -27,6 +27,7 @@ setup(
             'detector_node = detector_node:main',
             'peg_detector_node = perception_part_detector.peg_detector_node:main',
             'green_button_color_detector_node = perception_part_detector.green_button_color_detector_node:main',
+            'bolt_top_mock_detector = perception_part_detector.bolt_top_mock_detector_node:main',
         ],
     },
 )

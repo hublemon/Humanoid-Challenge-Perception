@@ -186,6 +186,18 @@ class ZedTargetCenterNode(Node):
 
         self.publish_debug_image = bool(gp('publish_debug_image').value)
         self.debug_image_topic = gp('debug_image_topic').value
+        self.use_single_detection_topic = (
+            self.target_class == 'green_button'
+            and self.detections_msg_type in ('single', 'part_detection', 'partdetection')
+        )
+        if (
+            self.detections_msg_type in ('single', 'part_detection', 'partdetection')
+            and not self.use_single_detection_topic
+        ):
+            self.get_logger().warning(
+                'detections_msg_type=single is only kept for green_button; '
+                f'subscribing to {self.detections_topic} as PartDetectionArray.'
+            )
 
         self.bridge = CvBridge()
         self._lock = threading.Lock()
@@ -217,7 +229,7 @@ class ZedTargetCenterNode(Node):
             allow_headerless=True)
         self.sync.registerCallback(self.synced_cb)
 
-        if self.detections_msg_type in ('single', 'part_detection', 'partdetection'):
+        if self.use_single_detection_topic:
             self.sub_det = self.create_subscription(
                 PartDetection, self.detections_topic, self.detection_cb, 10)
         else:
@@ -227,7 +239,8 @@ class ZedTargetCenterNode(Node):
         self.get_logger().info(
             f'{self.preset.node_name} ready. target_class={self.target_class!r}, '
             f'mode={self.preset.target_mode}, detections={self.detections_topic}, '
-            f'detections_msg_type={self.detections_msg_type}, '
+            f'detections_msg_type='
+            f'{"single" if self.use_single_detection_topic else "array"}, '
             f'out={self.out_pose_topic}, tf_mode={self.tf_lookup_mode}, '
             f'tf_timeout={self.tf_timeout_sec:.3f}s')
 

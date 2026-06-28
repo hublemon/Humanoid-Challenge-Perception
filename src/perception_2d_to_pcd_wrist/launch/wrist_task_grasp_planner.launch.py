@@ -61,6 +61,11 @@ def generate_launch_description() -> LaunchDescription:
             default_value='2.0',
             description='Maximum age for republishing the last selected pose.',
         ),
+        DeclareLaunchArgument(
+            'publish_debug_image',
+            default_value='true',
+            description='Publish wrist target debug image.',
+        ),
     ]
 
     node = Node(
@@ -99,6 +104,10 @@ def generate_launch_description() -> LaunchDescription:
                 'hold_last_pose_sec': ParameterValue(
                     LaunchConfiguration('hold_last_pose_sec'),
                     value_type=float,
+                ),
+                'publish_debug_image': ParameterValue(
+                    LaunchConfiguration('publish_debug_image'),
+                    value_type=bool,
                 ),
             },
         ],

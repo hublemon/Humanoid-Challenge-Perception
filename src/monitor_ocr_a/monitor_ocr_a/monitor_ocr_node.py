@@ -58,6 +58,12 @@ class MonitorOCRNode(Node):
         self.declare_parameter('debug_save_every_n', 10)
         self.declare_parameter('icon_match_threshold', 0.45)
         self.declare_parameter('digit_match_threshold', 0.45)
+        self.declare_parameter('digit_hog_svm_model_path', '')
+        self.declare_parameter('icon_hog_svm_model_path', '')
+        self.declare_parameter('digit_hog_conf_threshold', 0.55)
+        self.declare_parameter('digit_hog_margin_threshold', 0.18)
+        self.declare_parameter('icon_hog_conf_threshold', 0.55)
+        self.declare_parameter('icon_hog_margin_threshold', 0.18)
         self.declare_parameter('allow_row_order_fallback', False)
         self.declare_parameter('template_root', '')
         self.declare_parameter(
@@ -72,7 +78,9 @@ class MonitorOCRNode(Node):
         self._ocr_mode        = str(self.get_parameter('ocr_mode').value).strip().lower()
         self._parts_reader_backend = str(
             self.get_parameter('parts_reader_backend').value).strip().lower()
-        if self._parts_reader_backend not in ('ocr', 'template_icon_digit'):
+        if self._parts_reader_backend not in (
+            'ocr', 'template_icon_digit', 'homography_hog_svm'
+        ):
             self.get_logger().warn(
                 f"알 수 없는 parts_reader_backend='{self._parts_reader_backend}', ocr로 대체합니다")
             self._parts_reader_backend = 'ocr'
@@ -95,6 +103,30 @@ class MonitorOCRNode(Node):
                 self.get_parameter('digit_match_threshold').value)
         except Exception:
             self._digit_match_threshold = 0.45
+        self._digit_hog_svm_model_path = str(
+            self.get_parameter('digit_hog_svm_model_path').value).strip()
+        self._icon_hog_svm_model_path = str(
+            self.get_parameter('icon_hog_svm_model_path').value).strip()
+        try:
+            self._digit_hog_conf_threshold = float(
+                self.get_parameter('digit_hog_conf_threshold').value)
+        except Exception:
+            self._digit_hog_conf_threshold = 0.55
+        try:
+            self._digit_hog_margin_threshold = float(
+                self.get_parameter('digit_hog_margin_threshold').value)
+        except Exception:
+            self._digit_hog_margin_threshold = 0.18
+        try:
+            self._icon_hog_conf_threshold = float(
+                self.get_parameter('icon_hog_conf_threshold').value)
+        except Exception:
+            self._icon_hog_conf_threshold = 0.55
+        try:
+            self._icon_hog_margin_threshold = float(
+                self.get_parameter('icon_hog_margin_threshold').value)
+        except Exception:
+            self._icon_hog_margin_threshold = 0.18
         self._allow_row_order_fallback = bool(
             self.get_parameter('allow_row_order_fallback').value)
         self._template_root = str(self.get_parameter('template_root').value).strip()
@@ -134,7 +166,8 @@ class MonitorOCRNode(Node):
         self.ocr_en = None
         self._parts_count_ocr = None
         self._needs_ocr = not (
-            self._parts_mode and self._parts_reader_backend == 'template_icon_digit')
+            self._parts_mode
+            and self._parts_reader_backend in ('template_icon_digit', 'homography_hog_svm'))
         if self._needs_ocr:
             from monitor_ocr_a.paddle_compat import make_ocr
 
@@ -158,7 +191,7 @@ class MonitorOCRNode(Node):
             self.get_logger().info(f'PaddleOCR 초기화 완료 - {self._effective_ocr_mode}')
         else:
             self.get_logger().info(
-                'PARTS mode: template_icon_digit backend; PaddleOCR import/init skipped')
+                f'PARTS mode: {self._parts_reader_backend} backend; PaddleOCR import/init skipped')
 
         self.bridge      = CvBridge()
         if self._parts_mode:
@@ -166,7 +199,8 @@ class MonitorOCRNode(Node):
                 window=10,
                 preserve_empty_counts=(
                     self._debug_images_enabled
-                    or self._parts_reader_backend == 'template_icon_digit'))
+                    or self._parts_reader_backend in (
+                        'template_icon_digit', 'homography_hog_svm')))
         elif self._sequence_mode:
             self._aggregator = FrameAggregatorSequence(window=10, peg_count=PEG_COUNT)
         else:
@@ -191,8 +225,14 @@ class MonitorOCRNode(Node):
                 self.pub_debug_images = {
                     'bbox_overlay': self.create_publisher(
                         Image, '/monitor_ocr/debug/bbox_overlay', 10),
+                    'corners_overlay': self.create_publisher(
+                        Image, '/monitor_ocr/debug/corners_overlay', 10),
                     'table_crop': self.create_publisher(
                         Image, '/monitor_ocr/debug/table_crop', 10),
+                    'warped': self.create_publisher(
+                        Image, '/monitor_ocr/debug/warped', 10),
+                    'grid_overlay': self.create_publisher(
+                        Image, '/monitor_ocr/debug/grid_overlay', 10),
                     'name_col': self.create_publisher(
                         Image, '/monitor_ocr/debug/name_col', 10),
                     'count_col': self.create_publisher(
@@ -323,13 +363,35 @@ class MonitorOCRNode(Node):
                                 debug_images=self._debug_images_enabled,
                                 debug_view=self._debug_view,
                                 template_root=self._template_root or None)
+                        elif self._parts_reader_backend == 'homography_hog_svm':
+                            from monitor_ocr_a.a_command_homography_reader import (
+                                process_frame_homography_hog_svm,
+                            )
+                            raw = process_frame_homography_hog_svm(
+                                img,
+                                digit_hog_svm_model_path=(
+                                    self._digit_hog_svm_model_path or None),
+                                icon_hog_svm_model_path=(
+                                    self._icon_hog_svm_model_path or None),
+                                digit_hog_conf_threshold=(
+                                    self._digit_hog_conf_threshold),
+                                digit_hog_margin_threshold=(
+                                    self._digit_hog_margin_threshold),
+                                icon_hog_conf_threshold=(
+                                    self._icon_hog_conf_threshold),
+                                icon_hog_margin_threshold=(
+                                    self._icon_hog_margin_threshold),
+                                debug_images=self._debug_images_enabled,
+                                debug_view=self._debug_view)
                         else:
                             from monitor_ocr_a.ocr_pipeline_parts import process_frame_parts
                             raw = process_frame_parts(
                                 self.ocr_kor, img, count_ocr=self._parts_count_ocr,
                                 debug_images=self._debug_images_enabled)
                         debug_images = raw.pop('_debug_images', None)
-                        if self._parts_reader_backend == 'template_icon_digit':
+                        if self._parts_reader_backend in (
+                            'template_icon_digit', 'homography_hog_svm'
+                        ):
                             for warning in (raw.get('debug') or {}).get('warnings', []):
                                 if warning not in self._template_reader_warnings_logged:
                                     self.get_logger().warn(warning)

@@ -8,6 +8,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -24,6 +25,11 @@ def generate_launch_description() -> LaunchDescription:
         default_value='/ws/yolo_venv/bin/python3',
         description='Python interpreter used to run the wrist task grasp planner node.',
     )
+    publish_debug_image_arg = DeclareLaunchArgument(
+        'publish_debug_image',
+        default_value='true',
+        description='Publish wrist target debug image.',
+    )
 
     planner = Node(
         package='perception_2d_to_pcd_wrist',
@@ -31,7 +37,15 @@ def generate_launch_description() -> LaunchDescription:
         name='wrist_task_grasp_planner_node',
         prefix=LaunchConfiguration('python_executable'),
         output='screen',
-        parameters=[LaunchConfiguration('params_file')],
+        parameters=[
+            LaunchConfiguration('params_file'),
+            {
+                'publish_debug_image': ParameterValue(
+                    LaunchConfiguration('publish_debug_image'),
+                    value_type=bool,
+                ),
+            },
+        ],
     )
 
-    return LaunchDescription([params_file_arg, python_arg, planner])
+    return LaunchDescription([params_file_arg, python_arg, publish_debug_image_arg, planner])
