@@ -29,7 +29,7 @@ monitor_ocr_result_*.jsonl
 # Large generated/debug artifacts
 datasets/
 models/
-two_topic_captures/
+two_topic_captures*/
 *.bag
 *.db3
 *.mcap
