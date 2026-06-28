@@ -246,11 +246,8 @@ class PerceptionDetectorNode(Node):
             self.get_logger().error(f'Failed to convert image message: {exc}')
             return
 
-        # YOLO input should be RGB for this model
-        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-
         results = self.model.predict(
-            img_rgb,
+            img_bgr,
             conf=self.conf,
             iou=self.iou,
             imgsz=self.imgsz,
