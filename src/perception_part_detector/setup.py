@@ -7,7 +7,6 @@ setup(
     name=package_name,
     version='0.0.1',
     packages=find_packages(exclude=['test']),
-    py_modules=['detector_node'],
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
@@ -24,10 +23,7 @@ setup(
     entry_points={
         'console_scripts': [
             'detector = perception_part_detector.detector_node:main',
-            'detector_node = detector_node:main',
-            'peg_detector_node = perception_part_detector.peg_detector_node:main',
             'green_button_color_detector_node = perception_part_detector.green_button_color_detector_node:main',
-            'bolt_top_mock_detector = perception_part_detector.bolt_top_mock_detector_node:main',
         ],
     },
 )

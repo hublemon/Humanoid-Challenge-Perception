@@ -70,6 +70,10 @@ class RgbdFrame:
     K_depth: np.ndarray
     rgb_frame: str
     depth_frame: str
+    pts_color: Optional[np.ndarray] = None
+    u_proj: Optional[np.ndarray] = None
+    v_proj: Optional[np.ndarray] = None
+    projection_cache_key: Optional[Tuple[object, ...]] = None
 
 
 @dataclass
@@ -193,6 +197,8 @@ class WristTaskGraspPlannerNode(Node):
         self.declare_parameter('sync_queue', 10)
         self.declare_parameter('log_rankings', True)
         self.declare_parameter('log_top_k', 5)
+        self.declare_parameter('log_rankings_throttle_sec', 0.0)
+        self.declare_parameter('extrinsics_cache_sec', 0.0)
         self.declare_parameter('temporal_smoothing_enable', True)
         self.declare_parameter('temporal_window_sec', 0.8)
         self.declare_parameter('temporal_min_observations', 3)
@@ -303,6 +309,8 @@ class WristTaskGraspPlannerNode(Node):
         self.sync_queue = int(gp('sync_queue').value)
         self.log_rankings = bool(gp('log_rankings').value)
         self.log_top_k = int(gp('log_top_k').value)
+        self.log_rankings_throttle_sec = float(gp('log_rankings_throttle_sec').value)
+        self.extrinsics_cache_sec = float(gp('extrinsics_cache_sec').value)
         self.temporal_smoothing_enable = bool(gp('temporal_smoothing_enable').value)
         self.temporal_window_sec = float(gp('temporal_window_sec').value)
         self.temporal_min_observations = max(
@@ -328,6 +336,11 @@ class WristTaskGraspPlannerNode(Node):
         self.last_pose: Optional[PoseStamped] = None
         self.last_target_detection: Optional[String] = None
         self.last_pose_time = None
+        self.last_rankings_log_time = None
+        self.extrinsics_cache_key = None
+        self.extrinsics_cache_time = None
+        self.extrinsics_cache_R = None
+        self.extrinsics_cache_t = None
 
         self.tf_buffer = tf2_ros.Buffer(
             cache_time=rclpy.duration.Duration(seconds=self.tf_buffer_cache_sec)
@@ -589,12 +602,21 @@ class WristTaskGraspPlannerNode(Node):
         v = int(round(float(v_proj[0])))
         return u, v
 
+    def _should_publish_debug_image(self) -> bool:
+        if not self.publish_debug_image or self.pub_debug_image is None:
+            return False
+        return self.pub_debug_image.get_subscription_count() > 0
+
+    def _publish_no_target_debug_image(self, rgb_bgr, stamp, frame_id) -> None:
+        if not self._should_publish_debug_image() or rgb_bgr is None:
+            return
+
+        debug_bgr = rgb_bgr.copy()
+        self._draw_text_block(debug_bgr, ['NO TARGET'])
+        self._publish_debug_image(debug_bgr, stamp, frame_id)
+
     def _publish_debug_image(self, debug_bgr, stamp, frame_id) -> None:
-        if (
-            not self.publish_debug_image
-            or self.pub_debug_image is None
-            or debug_bgr is None
-        ):
+        if not self._should_publish_debug_image() or debug_bgr is None:
             return
 
         try:
@@ -728,7 +750,7 @@ class WristTaskGraspPlannerNode(Node):
         selected: Optional[Candidate],
         lines: Sequence[str],
     ) -> None:
-        if not self.publish_debug_image or debug_bgr is None:
+        if not self._should_publish_debug_image() or debug_bgr is None:
             return
 
         candidate_by_det_id = {id(candidate.det): candidate for candidate in candidates}
@@ -823,6 +845,74 @@ class WristTaskGraspPlannerNode(Node):
             self._draw_text_block(debug_bgr, ['NO TARGET'])
         self._publish_debug_image(debug_bgr, frame.stamp, frame.rgb_frame)
 
+    @staticmethod
+    def _array_cache_key(array: np.ndarray) -> Tuple[object, ...]:
+        arr = np.asarray(array)
+        return arr.shape, arr.dtype.str, arr.tobytes()
+
+    def _projection_cache_key(
+        self,
+        frame: RgbdFrame,
+        R: np.ndarray,
+        t: np.ndarray,
+    ) -> Tuple[object, ...]:
+        return (
+            self.pixel_step,
+            self.depth_scale,
+            tuple(sorted(self.invalid_depth_values)),
+            self.min_depth_m,
+            self.max_depth_m,
+            frame.rgb_frame,
+            frame.depth_frame,
+            self._array_cache_key(frame.K_rgb),
+            self._array_cache_key(frame.K_depth),
+            self._array_cache_key(R),
+            self._array_cache_key(t),
+        )
+
+    def _prepare_rgbd_projection(
+        self,
+        frame: RgbdFrame,
+    ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        R, t = self._get_extrinsics()
+        cache_key = self._projection_cache_key(frame, R, t)
+
+        if (
+            frame.projection_cache_key == cache_key
+            and frame.pts_color is not None
+            and frame.u_proj is not None
+            and frame.v_proj is not None
+        ):
+            return frame.pts_color, frame.u_proj, frame.v_proj
+
+        pts_depth, _, _ = wr.backproject_depth_image(
+            frame.depth,
+            frame.K_depth,
+            self.depth_scale,
+            self.invalid_depth_values,
+            self.min_depth_m,
+            self.max_depth_m
+        )
+
+        if pts_depth.shape[0] == 0:
+            self.get_logger().warn(
+                'No valid depth points after range filtering.',
+                throttle_duration_sec=5.0
+            )
+            return None
+
+        if self.pixel_step > 1:
+            pts_depth = pts_depth[::self.pixel_step]
+
+        pts_color = wr.transform_points(pts_depth, R, t)
+        u_proj, v_proj = wr.project_to_image(pts_color, frame.K_rgb)
+
+        frame.pts_color = pts_color
+        frame.u_proj = u_proj
+        frame.v_proj = v_proj
+        frame.projection_cache_key = cache_key
+        return pts_color, u_proj, v_proj
+
 
     def detections_cb(self, msg: PartDetectionArray) -> None:
         if self.latest_depth is None or self.latest_rgb is None or self.K_depth is None:
@@ -830,28 +920,25 @@ class WristTaskGraspPlannerNode(Node):
                 'No synchronized wrist RGB-D/intrinsics yet; skipping detections.',
                 throttle_duration_sec=5.0
             )
-            if self.publish_debug_image and self.latest_rgb is not None:
-                debug_bgr = self.latest_rgb.copy()
-                self._draw_text_block(
-                    debug_bgr,
-                    ['NO TARGET'],
-                )
-                self._publish_debug_image(debug_bgr, self.latest_depth_stamp, self.rgb_frame)
+            self._publish_no_target_debug_image(
+                self.latest_rgb,
+                self.latest_depth_stamp,
+                self.rgb_frame,
+            )
             self._publish_all_object_pose_array([], self.latest_depth_stamp)
             return
 
         frame = self._select_rgbd_frame_for_detection(msg)
         if frame is None:
             empty_stamp = None
-            if self.publish_debug_image and self.rgbd_history:
+            if self.rgbd_history:
                 fallback = self.rgbd_history[-1]
                 empty_stamp = fallback.stamp
-                debug_bgr = fallback.rgb.copy()
-                self._draw_text_block(
-                    debug_bgr,
-                    ['NO TARGET'],
+                self._publish_no_target_debug_image(
+                    fallback.rgb,
+                    fallback.stamp,
+                    fallback.rgb_frame,
                 )
-                self._publish_debug_image(debug_bgr, fallback.stamp, fallback.rgb_frame)
             self._publish_all_object_pose_array([], empty_stamp)
             return
 
@@ -866,7 +953,7 @@ class WristTaskGraspPlannerNode(Node):
         active_classes = self._active_task_classes()
         rgb_h, rgb_w = self.latest_rgb.shape[:2]
         tray_roi = self._resolve_tray_roi(rgb_w, rgb_h)
-        debug_bgr = frame.rgb.copy() if self.publish_debug_image else None
+        debug_bgr = frame.rgb.copy() if self._should_publish_debug_image() else None
 
         wrist_dets = [det for det in msg.detections if self._is_wrist_detection(det)]
         debug_skips = {
@@ -906,22 +993,8 @@ class WristTaskGraspPlannerNode(Node):
             )
             return
 
-        R, t = self._get_extrinsics()
-
-        pts_depth, _, _ = wr.backproject_depth_image(
-            self.latest_depth,
-            self.K_depth,
-            self.depth_scale,
-            self.invalid_depth_values,
-            self.min_depth_m,
-            self.max_depth_m
-        )
-
-        if pts_depth.shape[0] == 0:
-            self.get_logger().warn(
-                'No valid depth points after range filtering.',
-                throttle_duration_sec=5.0
-            )
+        projection = self._prepare_rgbd_projection(frame)
+        if projection is None:
             self._publish_all_object_pose_array([], frame.stamp)
             self._publish_candidate_debug_image(
                 debug_bgr,
@@ -933,15 +1006,12 @@ class WristTaskGraspPlannerNode(Node):
             )
             return
 
-        if self.pixel_step > 1:
-            pts_depth = pts_depth[::self.pixel_step]
-
-        pts_color = wr.transform_points(pts_depth, R, t)
-        u_proj, v_proj = wr.project_to_image(pts_color, self.K_rgb)
+        pts_color, u_proj, v_proj = projection
 
         valid_candidates: List[Candidate] = []
         all_pose_candidates: List[Candidate] = []
         task_candidates: List[Candidate] = []
+        arm_reference = None
 
         for det in wrist_dets:
             canonical = self._canonical_label(det.class_name)
@@ -990,7 +1060,10 @@ class WristTaskGraspPlannerNode(Node):
             center_color = center_estimate.center_color
             center_base = self._transform_np_by_tf(center_color, base_from_rgb_tf)
 
-            metrics = self._compute_metrics_from_base(det, center_base)
+            if arm_reference is None:
+                arm_reference = self._arm_reference_in_base()
+
+            metrics = self._compute_metrics_from_base(det, center_base, arm_reference)
             if metrics is None:
                 debug_skips['tf_failed'] += 1
                 continue
@@ -1074,7 +1147,7 @@ class WristTaskGraspPlannerNode(Node):
         task_candidates.sort(key=lambda c: c.score, reverse=True)
         raw_best = task_candidates[0]
 
-        if self.log_rankings:
+        if self._should_log_rankings():
             self._log_candidates(task_candidates[:max(1, self.log_top_k)])
 
         best = self._select_stable_candidate(task_candidates)
@@ -1145,6 +1218,25 @@ class WristTaskGraspPlannerNode(Node):
             best,
             [],
         )
+
+    def _should_log_rankings(self) -> bool:
+        if not self.log_rankings:
+            return False
+
+        if self.log_rankings_throttle_sec <= 0.0:
+            return True
+
+        now = self.get_clock().now()
+        if self.last_rankings_log_time is None:
+            self.last_rankings_log_time = now
+            return True
+
+        age = (now - self.last_rankings_log_time).nanoseconds * 1e-9
+        if age >= self.log_rankings_throttle_sec:
+            self.last_rankings_log_time = now
+            return True
+
+        return False
 
     def _select_stable_candidate(
         self,
@@ -1335,9 +1427,11 @@ class WristTaskGraspPlannerNode(Node):
         self,
         det,
         point_base: np.ndarray,
+        arm_reference: Optional[np.ndarray] = None,
     ) -> Optional[Dict[str, float]]:
         confidence = self._clip01(float(det.confidence))
-        arm_reference = self._arm_reference_in_base()
+        if arm_reference is None:
+            arm_reference = self._arm_reference_in_base()
         arm_distance = float(np.linalg.norm(point_base - arm_reference))
         arm_proximity = 1.0 - self._clip01(
             arm_distance / max(1e-6, self.max_arm_distance_m)
@@ -1929,6 +2023,18 @@ class WristTaskGraspPlannerNode(Node):
         if not self.use_tf_for_extrinsics or not self.rgb_frame or not self.depth_frame:
             return self._R_fallback, self._t_fallback
 
+        cache_key = (self.rgb_frame, self.depth_frame)
+        if (
+            self.extrinsics_cache_sec > 0.0
+            and self.extrinsics_cache_key == cache_key
+            and self.extrinsics_cache_time is not None
+            and self.extrinsics_cache_R is not None
+            and self.extrinsics_cache_t is not None
+        ):
+            age = (self.get_clock().now() - self.extrinsics_cache_time).nanoseconds * 1e-9
+            if 0.0 <= age <= self.extrinsics_cache_sec:
+                return self.extrinsics_cache_R, self.extrinsics_cache_t
+
         try:
             tf = self.tf_buffer.lookup_transform(
                 self.rgb_frame,
@@ -1942,6 +2048,12 @@ class WristTaskGraspPlannerNode(Node):
 
             R = self._quat_to_matrix(q.x, q.y, q.z, q.w)
             t = np.array([tr.x, tr.y, tr.z], dtype=np.float64)
+
+            if self.extrinsics_cache_sec > 0.0:
+                self.extrinsics_cache_key = cache_key
+                self.extrinsics_cache_time = self.get_clock().now()
+                self.extrinsics_cache_R = R
+                self.extrinsics_cache_t = t
 
             return R, t
 

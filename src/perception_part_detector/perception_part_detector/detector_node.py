@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
 from ultralytics import YOLO
 from ament_index_python.packages import get_package_share_directory
@@ -111,6 +111,10 @@ class PerceptionDetectorNode(Node):
         self.declare_parameter('iou_threshold', 0.35)
         self.declare_parameter('imgsz', 640)
         self.declare_parameter('publish_debug_image', True)
+        self.declare_parameter('publish_debug_only_if_subscribed', True)
+        self.declare_parameter('image_qos_depth', 1)
+        self.declare_parameter('skip_if_busy', True)
+        self.declare_parameter('log_detections', True)
         self.declare_parameter('smoothing_window_sec', 0.3)
         self.declare_parameter('smoothing_min_ratio', 0.5)
         self.declare_parameter('smoothing_match_dist', 40.0)
@@ -139,6 +143,12 @@ class PerceptionDetectorNode(Node):
         self.iou = self.get_parameter('iou_threshold').value
         self.imgsz = self.get_parameter('imgsz').value
         self.publish_debug_image = self.get_parameter('publish_debug_image').value
+        self.publish_debug_only_if_subscribed = (
+            self.get_parameter('publish_debug_only_if_subscribed').value
+        )
+        self.image_qos_depth = max(1, int(self.get_parameter('image_qos_depth').value))
+        self.skip_if_busy = self.get_parameter('skip_if_busy').value
+        self.log_detections = self.get_parameter('log_detections').value
         self.smoothing_window_sec = self.get_parameter('smoothing_window_sec').value
         self.smoothing_min_ratio = self.get_parameter('smoothing_min_ratio').value
         self.smoothing_match_dist = self.get_parameter('smoothing_match_dist').value
@@ -180,14 +190,23 @@ class PerceptionDetectorNode(Node):
             )
             for cam_name in camera_map
         }
+        self._busy = {cam_name: False for cam_name in camera_map}
+        image_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=self.image_qos_depth,
+        )
+        self.image_subs = []
 
         for cam_name, topic in camera_map.items():
             if topic:
-                self.create_subscription(
-                    Image,
-                    topic,
-                    lambda msg, n=cam_name: self.image_cb(msg, n),
-                    qos_profile_sensor_data
+                self.image_subs.append(
+                    self.create_subscription(
+                        Image,
+                        topic,
+                        lambda msg, n=cam_name: self.image_cb(msg, n),
+                        image_qos,
+                    )
                 )
                 self.get_logger().info(f'Subscribed {cam_name}: {topic}')
 
@@ -213,7 +232,8 @@ class PerceptionDetectorNode(Node):
 
         self.get_logger().info(
             f'PerceptionDetectorNode ready. part={self.part_name} mode={self.mode} '
-            f'publish_debug_image={self.publish_debug_image}'
+            f'publish_debug_image={self.publish_debug_image} '
+            f'image_qos_depth={self.image_qos_depth} skip_if_busy={self.skip_if_busy}'
         )
 
     def _default_model_path(self, pkg_dir, part_name):
@@ -240,6 +260,16 @@ class PerceptionDetectorNode(Node):
     # main callback
 
     def image_cb(self, msg, source):
+        if self.skip_if_busy and self._busy.get(source, False):
+            return
+
+        self._busy[source] = True
+        try:
+            self._process_image(msg, source)
+        finally:
+            self._busy[source] = False
+
+    def _process_image(self, msg, source):
         try:
             img_bgr = image_msg_to_bgr(msg)
         except Exception as exc:
@@ -262,7 +292,7 @@ class PerceptionDetectorNode(Node):
         smoothed_array = self._apply_temporal_smoothing(det_array, msg.header, source)
         self.detections_pub.publish(smoothed_array)
 
-        if self.publish_debug_image:
+        if self._should_publish_debug(source):
             self._publish_debug(img_bgr, smoothed_array, msg.header, source)
 
     def _apply_temporal_smoothing(self, det_array, header, source):
@@ -320,11 +350,12 @@ class PerceptionDetectorNode(Node):
 
             det_array.detections.append(det)
 
-            self.get_logger().info(
-                f'[{source}] {det.class_name} conf={conf:.2f} '
-                f'bbox=[{x1},{y1},{x2},{y2}] '
-                f'center=({det.center_x:.0f},{det.center_y:.0f})'
-            )
+            if self.log_detections:
+                self.get_logger().info(
+                    f'[{source}] {det.class_name} conf={conf:.2f} '
+                    f'bbox=[{x1},{y1},{x2},{y2}] '
+                    f'center=({det.center_x:.0f},{det.center_y:.0f})'
+                )
 
         return det_array
 
@@ -370,11 +401,12 @@ class PerceptionDetectorNode(Node):
         ]
         matched = direct_children + self._match_children(match_children, parents)
 
-        self.get_logger().info(
-            f'[{source}] parents={len(parents)}, '
-            f'children={len(children)}, direct={len(direct_children)}, '
-            f'matched={len(matched)}'
-        )
+        if self.log_detections:
+            self.get_logger().info(
+                f'[{source}] parents={len(parents)}, '
+                f'children={len(children)}, direct={len(direct_children)}, '
+                f'matched={len(matched)}'
+            )
 
         if self.index_by_x:
             matched.sort(key=lambda o: o['center_y'], reverse=True)
@@ -395,11 +427,12 @@ class PerceptionDetectorNode(Node):
 
             det_array.detections.append(det)
 
-            self.get_logger().info(
-                f'[{source}] {det.class_name} '
-                f'conf={det.confidence:.2f} '
-                f'center=({cx:.0f},{cy:.0f})'
-            )
+            if self.log_detections:
+                self.get_logger().info(
+                    f'[{source}] {det.class_name} '
+                    f'conf={det.confidence:.2f} '
+                    f'center=({cx:.0f},{cy:.0f})'
+                )
 
         return det_array
 
@@ -459,8 +492,18 @@ class PerceptionDetectorNode(Node):
 
     # debug image
 
+    def _should_publish_debug(self, source):
+        if not self.publish_debug_image:
+            return False
+        pub = self.debug_pubs.get(source)
+        if pub is None:
+            return False
+        if self.publish_debug_only_if_subscribed:
+            return pub.get_subscription_count() > 0
+        return True
+
     def _publish_debug(self, img_bgr, det_array, header, source):
-        if source not in self.debug_pubs:
+        if not self._should_publish_debug(source):
             return
 
         overlay = img_bgr.copy()

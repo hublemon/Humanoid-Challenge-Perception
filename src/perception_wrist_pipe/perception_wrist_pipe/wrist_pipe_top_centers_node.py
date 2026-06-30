@@ -252,6 +252,13 @@ class WristPipeTopCentersNode(Node):
         self.extrinsics_translation = np.asarray(gp('extrinsics_translation').value, dtype=np.float64).reshape(3)
 
         self.mask_erosion_px = int(gp('mask_erosion_px').value)
+        self._mask_erosion_kernel = None
+        if self.mask_erosion_px > 0:
+            ksz = 2 * self.mask_erosion_px + 1
+            self._mask_erosion_kernel = cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (ksz, ksz),
+            )
         self.ellipse_min_area_px = float(gp('ellipse_min_area_px').value)
         self.ellipse_max_area_px = float(gp('ellipse_max_area_px').value)
         self.ellipse_min_aspect = float(gp('ellipse_min_aspect').value)
@@ -429,6 +436,9 @@ class WristPipeTopCentersNode(Node):
             )
             return
 
+        K_rgb = self.camera_matrix(rgb_info)
+        K_depth = self.camera_matrix(depth_info)
+
         try:
             depth_m = self.depth_msg_to_meters(depth_msg)
         except Exception as exc:  # noqa: BLE001
@@ -489,8 +499,8 @@ class WristPipeTopCentersNode(Node):
 
         pts_color, u_proj, v_proj = self.reproject_depth_to_color_image(
             depth_m,
-            depth_info,
-            rgb_info,
+            K_depth,
+            K_rgb,
             r_depth_to_color,
             t_depth_to_color,
         )
@@ -506,6 +516,13 @@ class WristPipeTopCentersNode(Node):
             )
             return
 
+        proj_ui, proj_vi, proj_in_bounds = self.projected_pixel_indices(
+            u_proj,
+            v_proj,
+            rgb_h,
+            rgb_w,
+        )
+
         candidates: List[PipeCenterCandidate] = []
         debug_overlays: List[PipeDebugOverlay] = []
         for det in detections:
@@ -514,9 +531,10 @@ class WristPipeTopCentersNode(Node):
                 rgb_h,
                 rgb_w,
                 pts_color,
-                u_proj,
-                v_proj,
-                rgb_info,
+                proj_ui,
+                proj_vi,
+                proj_in_bounds,
+                K_rgb,
                 color_frame,
                 base_tf,
                 rgb_msg.header.stamp,
@@ -924,9 +942,10 @@ class WristPipeTopCentersNode(Node):
         rgb_h: int,
         rgb_w: int,
         pts_color: np.ndarray,
-        u_proj: np.ndarray,
-        v_proj: np.ndarray,
-        rgb_info: CameraInfo,
+        proj_ui: np.ndarray,
+        proj_vi: np.ndarray,
+        proj_in_bounds: np.ndarray,
+        K_rgb: np.ndarray,
         color_frame: str,
         base_tf: Optional[TransformStamped],
         stamp,
@@ -964,9 +983,10 @@ class WristPipeTopCentersNode(Node):
             v_center,
             ring,
             pts_color,
-            u_proj,
-            v_proj,
-            rgb_info,
+            proj_ui,
+            proj_vi,
+            proj_in_bounds,
+            K_rgb,
         )
         if center_color is None:
             overlay.status = 'no 3d center'
@@ -1037,8 +1057,8 @@ class WristPipeTopCentersNode(Node):
     def reproject_depth_to_color_image(
         self,
         depth_m: np.ndarray,
-        depth_info: CameraInfo,
-        rgb_info: CameraInfo,
+        k_depth: np.ndarray,
+        k_rgb: np.ndarray,
         r_depth_to_color: np.ndarray,
         t_depth_to_color: np.ndarray,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -1062,7 +1082,6 @@ class WristPipeTopCentersNode(Node):
         vs_valid = vs_flat[valid]
         z_valid = z[valid]
 
-        k_depth = self.camera_matrix(depth_info)
         fx_d, fy_d = k_depth[0, 0], k_depth[1, 1]
         cx_d, cy_d = k_depth[0, 2], k_depth[1, 2]
 
@@ -1078,7 +1097,6 @@ class WristPipeTopCentersNode(Node):
             empty = np.empty((0,), dtype=np.float64)
             return np.empty((0, 3), dtype=np.float64), empty, empty
 
-        k_rgb = self.camera_matrix(rgb_info)
         fx_c, fy_c = k_rgb[0, 0], k_rgb[1, 1]
         cx_c, cy_c = k_rgb[0, 2], k_rgb[1, 2]
         u_proj = fx_c * pts_color[:, 0] / pts_color[:, 2] + cx_c
@@ -1105,10 +1123,8 @@ class WristPipeTopCentersNode(Node):
                 poly[:, 1] = np.clip(poly[:, 1], 0, h - 1)
                 mask = np.zeros((h, w), dtype=np.uint8)
                 cv2.fillPoly(mask, [poly], 255)
-                if self.mask_erosion_px > 0:
-                    ksz = 2 * self.mask_erosion_px + 1
-                    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksz, ksz))
-                    mask = cv2.erode(mask, kernel, iterations=1)
+                if self._mask_erosion_kernel is not None:
+                    mask = cv2.erode(mask, self._mask_erosion_kernel, iterations=1)
                 if bbox is None and np.any(mask):
                     bbox = self.bbox_from_mask(mask)
 
@@ -1285,12 +1301,18 @@ class WristPipeTopCentersNode(Node):
         v_center: float,
         ring_mask: np.ndarray,
         pts_color: np.ndarray,
-        u_proj: np.ndarray,
-        v_proj: np.ndarray,
-        rgb_info: CameraInfo,
+        proj_ui: np.ndarray,
+        proj_vi: np.ndarray,
+        proj_in_bounds: np.ndarray,
+        K_rgb: np.ndarray,
     ) -> Optional[np.ndarray]:
         """Estimate center in color optical frame from ring-selected points."""
-        inside = self.mask_membership(u_proj, v_proj, ring_mask)
+        inside = self.mask_membership_precomputed(
+            proj_ui,
+            proj_vi,
+            proj_in_bounds,
+            ring_mask,
+        )
         if not np.any(inside):
             return None
 
@@ -1319,14 +1341,14 @@ class WristPipeTopCentersNode(Node):
                     or mean_resid <= self.plane_max_mean_residual_m
                 )
                 if n_inliers >= self.plane_fit_min_points and resid_ok:
-                    center = self.ray_plane_intersection(u_center, v_center, normal, offset, rgb_info)
+                    center = self.ray_plane_intersection(u_center, v_center, normal, offset, K_rgb)
                     if center is not None:
                         return center
 
         z_median = float(np.median(z))
         if not (self.min_depth_m <= z_median <= self.max_depth_m):
             return None
-        return self.backproject_single_color(u_center, v_center, z_median, rgb_info)
+        return self.backproject_single_color(u_center, v_center, z_median, K_rgb)
 
     def select_rim_plane_points(self, pts: np.ndarray) -> np.ndarray:
         """Keep likely rim depths while preserving enough points for plane fitting."""
@@ -1348,15 +1370,37 @@ class WristPipeTopCentersNode(Node):
         return pts
 
     @staticmethod
-    def mask_membership(u: np.ndarray, v: np.ndarray, mask: np.ndarray) -> np.ndarray:
-        """Return True for projected RGB pixels that land inside mask."""
-        h, w = mask.shape[:2]
+    def projected_pixel_indices(
+        u: np.ndarray,
+        v: np.ndarray,
+        h: int,
+        w: int,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Precompute rounded RGB pixel indices and in-bounds flags."""
         ui = np.round(u).astype(np.int64)
         vi = np.round(v).astype(np.int64)
         in_bounds = (ui >= 0) & (ui < w) & (vi >= 0) & (vi < h)
-        inside = np.zeros(u.shape[0], dtype=bool)
+        return ui, vi, in_bounds
+
+    @staticmethod
+    def mask_membership(u: np.ndarray, v: np.ndarray, mask: np.ndarray) -> np.ndarray:
+        """Return True for projected RGB pixels that land inside mask."""
+        h, w = mask.shape[:2]
+        ui, vi, in_bounds = WristPipeTopCentersNode.projected_pixel_indices(u, v, h, w)
+        return WristPipeTopCentersNode.mask_membership_precomputed(ui, vi, in_bounds, mask)
+
+    @staticmethod
+    def mask_membership_precomputed(
+        ui: np.ndarray,
+        vi: np.ndarray,
+        in_bounds: np.ndarray,
+        mask: np.ndarray,
+    ) -> np.ndarray:
+        """Return mask membership using precomputed projected RGB indices."""
+        inside = np.zeros(ui.shape[0], dtype=bool)
         inside[in_bounds] = mask[vi[in_bounds], ui[in_bounds]] > 0
         return inside
+
 
     def fit_plane_robust(self, pts: np.ndarray) -> Optional[Tuple[np.ndarray, float, float, int]]:
         """Fit a plane with iterative outlier rejection."""
@@ -1411,12 +1455,11 @@ class WristPipeTopCentersNode(Node):
         v_center: float,
         normal: np.ndarray,
         offset: float,
-        rgb_info: CameraInfo,
+        K_rgb: np.ndarray,
     ) -> Optional[np.ndarray]:
         """Intersect color camera center ray with plane in color frame."""
-        k_rgb = self.camera_matrix(rgb_info)
-        fx, fy = float(k_rgb[0, 0]), float(k_rgb[1, 1])
-        cx, cy = float(k_rgb[0, 2]), float(k_rgb[1, 2])
+        fx, fy = float(K_rgb[0, 0]), float(K_rgb[1, 1])
+        cx, cy = float(K_rgb[0, 2]), float(K_rgb[1, 2])
         if fx <= 0.0 or fy <= 0.0:
             return None
 
@@ -1433,11 +1476,10 @@ class WristPipeTopCentersNode(Node):
         return center
 
     @staticmethod
-    def backproject_single_color(u: float, v: float, z: float, info: CameraInfo) -> np.ndarray:
+    def backproject_single_color(u: float, v: float, z: float, K_rgb: np.ndarray) -> np.ndarray:
         """Back-project one RGB pixel with a color-frame depth z."""
-        k = np.asarray(info.k, dtype=np.float64).reshape(3, 3)
-        fx, fy = float(k[0, 0]), float(k[1, 1])
-        cx, cy = float(k[0, 2]), float(k[1, 2])
+        fx, fy = float(K_rgb[0, 0]), float(K_rgb[1, 1])
+        cx, cy = float(K_rgb[0, 2]), float(K_rgb[1, 2])
         return np.array([(u - cx) * z / fx, (v - cy) * z / fy, z], dtype=np.float64)
 
     @staticmethod

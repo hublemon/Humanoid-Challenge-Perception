@@ -32,33 +32,15 @@ install(DIRECTORY perception_part_detector/
 )
 
 install(PROGRAMS
-  detector_node.py
-  DESTINATION lib/${PROJECT_NAME}
-  RENAME detector_node
-)
-
-install(PROGRAMS
   perception_part_detector/detector_node.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME detector
 )
 
 install(PROGRAMS
-  perception_part_detector/peg_detector_node.py
-  DESTINATION lib/${PROJECT_NAME}
-  RENAME peg_detector_node
-)
-
-install(PROGRAMS
   perception_part_detector/green_button_color_detector_node.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME green_button_color_detector_node
-)
-
-install(PROGRAMS
-  perception_part_detector/bolt_top_mock_detector_node.py
-  DESTINATION lib/${PROJECT_NAME}
-  RENAME bolt_top_mock_detector
 )
 
 install(DIRECTORY

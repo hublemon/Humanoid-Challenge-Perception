@@ -1,6 +1,6 @@
 # perception_part_detector
 
-YOLO 기반 부품 탐지 ROS 2 패키지입니다. 기존 단일 `detector_node` 실행 경로를 유지하면서, nut/peg 전용 노드와 v2 generic multi-camera detector를 추가로 제공합니다.
+YOLO 기반 부품 탐지 ROS 2 패키지입니다. part별 launch와 전용 노드로 부품 detection을 제공합니다.
 
 ## Messages
 
@@ -13,9 +13,7 @@ YOLO 기반 부품 탐지 ROS 2 패키지입니다. 기존 단일 `detector_node
 
 | Executable | Launch | Default model | Notes |
 | --- | --- | --- | --- |
-| `detector_node` | `detector.launch.py` | `weights/best.pt` | 단일 카메라 선택형 detector |
 | `detector` | `nut_detector.launch.py` | `weights/nut_best.pt` | generic detector로 실행되는 nut detector |
-| `peg_detector_node` | `peg_detector.launch.py` | `weights/peg_best.pt` | head pipe opening detector |
 | `detector` | `pipe_detector.launch.py`, `green_button_detector.launch.py`, `bolt_hole_detector.launch.py`, `bolt_top_detector.launch.py`, `wheel_hole_detector.launch.py`, `drill_detector.launch.py` | `weights/<part>_best.pt` | multi-camera generic detector |
 
 ## Build
@@ -30,9 +28,7 @@ source install/setup.bash
 ## Run
 
 ```bash
-ros2 launch perception_part_detector detector.launch.py
 ros2 launch perception_part_detector nut_detector.launch.py
-ros2 launch perception_part_detector peg_detector.launch.py
 ros2 launch perception_part_detector pipe_detector.launch.py
 ros2 launch perception_part_detector all.launch.py
 ```
@@ -40,9 +36,7 @@ ros2 launch perception_part_detector all.launch.py
 개별 실행도 가능합니다.
 
 ```bash
-ros2 run perception_part_detector detector_node
 ros2 run perception_part_detector detector
-ros2 run perception_part_detector peg_detector_node
 ```
 
 ## Model Weights
@@ -51,7 +45,6 @@ ros2 run perception_part_detector peg_detector_node
 
 - `best.pt`
 - `nut_best.pt`
-- `peg_best.pt`
 - `<part>_best.pt` for the v2 generic detector launches
 
 `.pt` 파일은 워크스페이스 `.gitignore`에서 제외되어 있으므로 Git에 직접 올라가지 않습니다. 공유가 필요하면 Git LFS, GitHub Release, Hugging Face, Google Drive, 또는 사내 스토리지를 사용하세요.
