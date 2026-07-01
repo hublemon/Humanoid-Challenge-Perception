@@ -1,0 +1,74 @@
+# =====================================================================
+# perception_head_pipe parameters (head camera)
+#
+# Takes the detector's pre-validated `pipe_opening` detections (typically 4)
+# and outputs ONE 3D top-opening center per opening as geometry_msgs/PoseArray
+# in base_link. Head RGB and registered depth are assumed ALIGNED:
+# RGB pixel (u, v) == depth pixel (u, v).
+# =====================================================================
+
+head_pipe_top_centers:
+  ros__parameters:
+    # ---- topics / frames ------------------------------------------------
+    rgb_topic: /zed/zed_node/rgb/image_rect_color
+    depth_topic: /zed/zed_node/depth/depth_registered
+    rgb_info_topic: /zed/zed_node/rgb/camera_info
+    depth_info_topic: /zed/zed_node/depth/camera_info
+    detections_topic: /detections
+    out_poses_topic: /perception/head/pipe_top_centers
+
+    base_frame: base_link
+    camera_frame: ""          # empty -> RGB CameraInfo header frame_id
+
+    # ---- detection gating ----------------------------------------------
+    camera_name: head
+    opening_class: pipe_opening
+    min_confidence: 0.3
+    bbox_format: xyxy         # 'xyxy' = [x1,y1,x2,y2]  |  'xywh' = [x,y,w,h]
+
+    # ---- count expectation ---------------------------------------------
+    expected_count: 4
+    require_expected_count: true
+    limit_to_expected_count: true
+
+    # ---- output ordering -----------------------------------------------
+    sort_by: image_x          # image_x | base_x | base_y
+    sort_reverse: false
+
+    # ---- depth ----------------------------------------------------------
+    min_depth_m: 0.15
+    max_depth_m: 3.0
+
+    # ---- mask / ring ----------------------------------------------------
+    mask_erosion_px: 0
+    intersect_ring_with_mask: false
+
+    # ---- bbox size sanity ----------------------------------------------
+    min_bbox_width_px: 5
+    min_bbox_height_px: 5
+    max_bbox_width_px: 10000
+    max_bbox_height_px: 10000
+
+    # ---- ellipse / ring shape ------------------------------------------
+    ellipse_outer_scale: 1.20
+    ellipse_inner_scale: 0.65
+
+    # ---- center selection ----------------------------------------------
+    use_detector_center: true
+    center_max_offset_ratio: 0.35
+
+    # ---- 3D estimation --------------------------------------------------
+    use_plane_fit: true
+    plane_fit_min_points: 20
+    min_ring_valid_points: 10
+    plane_outlier_m: 0.015
+    plane_max_mean_residual_m: 0.01
+    rim_depth_percentile: 35.0
+
+    # ---- sync / TF ------------------------------------------------------
+    sync_queue_size: 10
+    sync_slop: 0.1
+    tf_timeout_sec: 0.3
+    allow_latest_tf_fallback: true
+
+    log_targets: true

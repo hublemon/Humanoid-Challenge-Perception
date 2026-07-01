@@ -1,0 +1,427 @@
+#!/usr/bin/env python3
+"""All-in-one one-shot target node (detect -> 3D, single node).
+
+Captures one (or a few) live RGB-D frame(s), runs YOLO ONCE, back-projects each
+target detection's mask into 3D (reusing the shared ``wrist_reprojection`` math
+from the 2d_to_pcd / wrist_projection pipeline), transforms the robust median
+center into ``base_frame``, publishes the results ONCE and (optionally) holds.
+
+Used for both nut and pipe via parameters:
+  * nut  : model=nut_best.pt   -> best PoseStamped on out_pose_topic
+  * pipe : model=pipe_best.pt  -> PoseArray of all centers on out_poses_topic
+
+Outputs (both always published):
+  out_pose_topic  : geometry_msgs/PoseStamped  (highest-confidence detection)
+  out_poses_topic : geometry_msgs/PoseArray     (all kept detections)
+
+Why single-node instead of the live pipeline:
+  The robot streams raw images at <=1 Hz, which starves the sync-based
+  detector+planner / wrist_pipe path. This node needs only one frame, uses
+  latest TF, and never relies on message-filter sync.
+
+Notes:
+  * Not the full wrist_pipe top-opening/plane-fit center -- this is the robust
+    mask-median 3D center. For full wrist_pipe fidelity use the frame gate
+    (oneshot_pipe.launch.py) instead.
+  * Run under a Python with ultralytics + cv_bridge (e.g. /ws/yolo_venv/bin/python3).
+"""
+
+import os
+import sys
+import time
+
+import numpy as np
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
+
+import tf2_ros
+from geometry_msgs.msg import Pose, PoseArray, PoseStamped
+from sensor_msgs.msg import CameraInfo, Image
+
+try:
+    from perception_nodes.wrist_projection import wrist_reprojection as wr
+except Exception:  # pragma: no cover - dev/script fallback
+    sys.path.insert(0, os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), '..', 'wrist_projection'))
+    import wrist_reprojection as wr  # type: ignore
+
+
+CAMERA_PRESETS = {
+    'wrist_right': {
+        'rgb_topic': '/camera_right/camera_right/color/image_rect_raw',
+        'depth_topic': '/camera_right/camera_right/depth/image_rect_raw',
+        'rgb_info_topic': '/camera_right/camera_right/color/camera_info',
+        'depth_info_topic': '/camera_right/camera_right/depth/camera_info',
+        'depth_scale': 0.001,
+    },
+    'zed': {
+        'rgb_topic': '/zed/zed_node/rgb/image_rect_color',
+        'depth_topic': '/zed/zed_node/depth/depth_registered',
+        'rgb_info_topic': '/zed/zed_node/rgb/camera_info',
+        'depth_info_topic': '/zed/zed_node/depth/camera_info',
+        'depth_scale': 1.0,
+    },
+}
+
+
+class OneShotTarget(Node):
+    def __init__(self):
+        super().__init__('oneshot_target')
+
+        p = self.declare_parameter
+        p('camera', 'wrist_right')
+        p('target_class', '')               # empty -> accept all classes
+        p('model_path', '')                 # required
+
+        p('rgb_topic', '')
+        p('depth_topic', '')
+        p('rgb_info_topic', '')
+        p('depth_info_topic', '')
+
+        p('base_frame', 'base_link')
+        p('rgb_frame', '')                  # empty -> from rgb_info header
+        p('depth_frame', '')                # empty -> from depth_info header
+
+        p('depth_scale', -1.0)              # <0 -> preset
+        p('invalid_depth_values', [0, 65535])
+        p('min_depth_m', 0.1)
+        p('max_depth_m', 3.0)
+        p('use_tf_for_extrinsics', True)
+        p('min_points', 20)
+
+        p('conf_threshold', 0.4)
+        p('imgsz', 640)
+        p('n_frames', 1)
+        p('capture_timeout_sec', 30.0)
+        p('tf_timeout_sec', 2.0)
+
+        p('out_pose_topic', '/perception/oneshot/target_pose')
+        p('out_poses_topic', '/perception/oneshot/target_poses')
+        p('republish_hz', 0.0)              # 0 -> publish once; >0 -> hold & repeat
+
+        gp = self.get_parameter
+        cam = str(gp('camera').value)
+        preset = CAMERA_PRESETS.get(cam)
+        if preset is None:
+            raise RuntimeError(
+                f"Unknown camera preset {cam!r}; use one of {list(CAMERA_PRESETS)}")
+
+        def topic(name):
+            v = str(gp(name).value).strip()
+            return v if v else preset[name]
+
+        self.rgb_topic = topic('rgb_topic')
+        self.depth_topic = topic('depth_topic')
+        self.rgb_info_topic = topic('rgb_info_topic')
+        self.depth_info_topic = topic('depth_info_topic')
+
+        self.target_class = str(gp('target_class').value).strip()
+        self.model_path = str(gp('model_path').value).strip()
+        self.base_frame = str(gp('base_frame').value).strip()
+        self.rgb_frame = str(gp('rgb_frame').value).strip()
+        self.depth_frame = str(gp('depth_frame').value).strip()
+
+        ds = float(gp('depth_scale').value)
+        self.depth_scale = ds if ds > 0.0 else float(preset['depth_scale'])
+        self.invalid_depth_values = set(int(v) for v in gp('invalid_depth_values').value)
+        self.min_depth_m = float(gp('min_depth_m').value)
+        self.max_depth_m = float(gp('max_depth_m').value)
+        self.use_tf_for_extrinsics = bool(gp('use_tf_for_extrinsics').value)
+        self.min_points = int(gp('min_points').value)
+
+        self.conf_threshold = float(gp('conf_threshold').value)
+        self.imgsz = int(gp('imgsz').value)
+        self.n_frames = max(1, int(gp('n_frames').value))
+        self.capture_timeout_sec = float(gp('capture_timeout_sec').value)
+        self.tf_timeout_sec = float(gp('tf_timeout_sec').value)
+
+        self.out_pose_topic = str(gp('out_pose_topic').value)
+        self.out_poses_topic = str(gp('out_poses_topic').value)
+        self.republish_hz = float(gp('republish_hz').value)
+
+        if not self.model_path or not os.path.exists(self.model_path):
+            raise RuntimeError(f"model_path not found: {self.model_path!r}")
+
+        from ultralytics import YOLO
+        from cv_bridge import CvBridge
+        self.bridge = CvBridge()
+        self.get_logger().info(f'Loading YOLO model: {self.model_path}')
+        self.model = YOLO(self.model_path)
+
+        self._rgb = None
+        self._rgb_info = None
+        self._depth_info = None
+        self._depths = []
+        self.last_pose = None
+        self.last_poses = None
+
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+
+        self.pub_pose = self.create_publisher(PoseStamped, self.out_pose_topic, 10)
+        self.pub_poses = self.create_publisher(PoseArray, self.out_poses_topic, 10)
+
+        self.create_subscription(Image, self.rgb_topic, self._rgb_cb, qos_profile_sensor_data)
+        self.create_subscription(Image, self.depth_topic, self._depth_cb, qos_profile_sensor_data)
+        self.create_subscription(
+            CameraInfo, self.rgb_info_topic, self._rgb_info_cb, qos_profile_sensor_data)
+        self.create_subscription(
+            CameraInfo, self.depth_info_topic, self._depth_info_cb, qos_profile_sensor_data)
+
+        self.get_logger().info(
+            f"One-shot target ready. camera={cam} "
+            f"target_class={self.target_class or 'ALL'!r} base={self.base_frame}\n"
+            f"  rgb={self.rgb_topic}\n  depth={self.depth_topic} scale={self.depth_scale}")
+
+    # ---- subs ----
+    def _rgb_cb(self, msg):
+        self._rgb = msg
+        if not self.rgb_frame:
+            self.rgb_frame = msg.header.frame_id
+
+    def _rgb_info_cb(self, msg):
+        self._rgb_info = msg
+
+    def _depth_info_cb(self, msg):
+        self._depth_info = msg
+        if not self.depth_frame:
+            self.depth_frame = msg.header.frame_id
+
+    def _depth_cb(self, msg):
+        if len(self._depths) < self.n_frames:
+            self._depths.append(msg)
+
+    def _have_all(self):
+        return (self._rgb is not None and self._rgb_info is not None
+                and self._depth_info is not None
+                and len(self._depths) >= self.n_frames)
+
+    def capture(self):
+        deadline = time.time() + self.capture_timeout_sec
+        while rclpy.ok() and not self._have_all():
+            if time.time() > deadline:
+                missing = []
+                if self._rgb is None:
+                    missing.append('rgb')
+                if self._rgb_info is None:
+                    missing.append('rgb_info')
+                if self._depth_info is None:
+                    missing.append('depth_info')
+                if len(self._depths) < self.n_frames:
+                    missing.append(f'depth({len(self._depths)}/{self.n_frames})')
+                raise TimeoutError(
+                    f"Capture timed out after {self.capture_timeout_sec:.0f}s; "
+                    f"missing: {missing}.")
+            rclpy.spin_once(self, timeout_sec=0.2)
+
+    # ---- geometry ----
+    @staticmethod
+    def _k(info):
+        return np.array(info.k, dtype=np.float64).reshape(3, 3)
+
+    @staticmethod
+    def _quat_to_R(x, y, z, w):
+        n = x * x + y * y + z * z + w * w
+        if n < 1e-12:
+            return np.eye(3)
+        s = 2.0 / n
+        return np.array([
+            [1 - s * (y * y + z * z), s * (x * y - z * w), s * (x * z + y * w)],
+            [s * (x * y + z * w), 1 - s * (x * x + z * z), s * (y * z - x * w)],
+            [s * (x * z - y * w), s * (y * z + x * w), 1 - s * (x * x + y * y)],
+        ], dtype=np.float64)
+
+    def _depth_to_color(self):
+        if (not self.use_tf_for_extrinsics or not self.rgb_frame
+                or not self.depth_frame or self.rgb_frame == self.depth_frame):
+            return np.eye(3), np.zeros(3)
+        try:
+            tf = self.tf_buffer.lookup_transform(
+                self.rgb_frame, self.depth_frame, rclpy.time.Time(),
+                timeout=rclpy.duration.Duration(seconds=self.tf_timeout_sec))
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException) as exc:
+            self.get_logger().warn(f'depth->color TF unavailable ({exc}); identity.')
+            return np.eye(3), np.zeros(3)
+        q, tr = tf.transform.rotation, tf.transform.translation
+        return self._quat_to_R(q.x, q.y, q.z, q.w), np.array([tr.x, tr.y, tr.z])
+
+    def _color_to_base_Rt(self):
+        deadline = time.time() + self.tf_timeout_sec
+        while rclpy.ok():
+            try:
+                tf = self.tf_buffer.lookup_transform(
+                    self.base_frame, self.rgb_frame, rclpy.time.Time())
+                q, tr = tf.transform.rotation, tf.transform.translation
+                return self._quat_to_R(q.x, q.y, q.z, q.w), np.array([tr.x, tr.y, tr.z])
+            except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
+                    tf2_ros.ExtrapolationException):
+                if time.time() > deadline:
+                    return None, None
+                rclpy.spin_once(self, timeout_sec=0.1)
+        return None, None
+
+    def _median_depth(self):
+        arrs = []
+        for msg in self._depths:
+            d = np.asarray(self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough'))
+            if d.ndim == 3:
+                d = d[:, :, 0]
+            arrs.append(d.astype(np.float64))
+        if len(arrs) == 1:
+            return arrs[0]
+        stack = np.stack(arrs, axis=0)
+        for bad in self.invalid_depth_values:
+            stack[stack == bad] = np.nan
+        with np.errstate(invalid='ignore'):
+            med = np.nanmedian(stack, axis=0)
+        med[np.isnan(med)] = 0
+        return med
+
+    @staticmethod
+    def _norm(s):
+        return s.strip().lower().replace('_', ' ')
+
+    # ---- main ----
+    def run_once(self):
+        self.capture()
+
+        rgb_bgr = self.bridge.imgmsg_to_cv2(self._rgb, desired_encoding='bgr8')
+        depth = self._median_depth()
+        K_rgb = self._k(self._rgb_info)
+        K_depth = self._k(self._depth_info)
+        h, w = rgb_bgr.shape[:2]
+
+        res = self.model(rgb_bgr, conf=self.conf_threshold, imgsz=self.imgsz,
+                         verbose=False)[0]
+        boxes = res.boxes
+        if boxes is None or len(boxes) == 0:
+            self.get_logger().warn('YOLO found no detections.')
+            return False
+
+        want = self._norm(self.target_class) if self.target_class else None
+        picks = []  # (conf, mask)
+        import cv2
+        for i, box in enumerate(boxes):
+            name = res.names[int(box.cls)]
+            if want is not None and self._norm(name) != want:
+                continue
+            conf = float(box.conf)
+            mask = np.zeros((h, w), dtype=np.uint8)
+            if res.masks is not None:
+                poly = np.asarray(res.masks.xy[i], dtype=np.int32)
+                if poly.shape[0] >= 3:
+                    cv2.fillPoly(mask, [poly], 255)
+            if mask.max() == 0:
+                x1, y1, x2, y2 = (int(v) for v in box.xyxy[0])
+                mask[max(0, y1):max(0, y2), max(0, x1):max(0, x2)] = 255
+            picks.append((conf, name, mask))
+
+        if not picks:
+            found = sorted({res.names[int(b.cls)] for b in boxes})
+            self.get_logger().warn(
+                f"target_class {self.target_class!r} not detected; got {found}.")
+            return False
+
+        # Back-project the depth once; reuse for every detection's mask.
+        pts_depth, _, _ = wr.backproject_depth_image(
+            depth, K_depth, self.depth_scale, self.invalid_depth_values,
+            self.min_depth_m, self.max_depth_m)
+        if pts_depth.shape[0] == 0:
+            self.get_logger().warn('No valid depth points in range.')
+            return False
+        R_dc, t_dc = self._depth_to_color()
+        pts_color = wr.transform_points(pts_depth, R_dc, t_dc)
+        u, v = wr.project_to_image(pts_color, K_rgb)
+
+        R_cb, t_cb = self._color_to_base_Rt()
+        if R_cb is None:
+            self.get_logger().error(
+                f'TF {self.rgb_frame} -> {self.base_frame} unavailable.')
+            return False
+
+        centers = []  # (conf, name, base_xyz)
+        for conf, name, mask in picks:
+            inside = wr.mask_membership(u, v, mask)
+            sel = pts_color[inside]
+            if sel.shape[0] < self.min_points:
+                continue
+            c_color = np.median(sel, axis=0)
+            c_base = R_cb @ c_color + t_cb
+            centers.append((conf, name, c_base))
+
+        if not centers:
+            self.get_logger().warn(
+                f'No detection had >= {self.min_points} depth points.')
+            return False
+
+        centers.sort(key=lambda c: c[0], reverse=True)
+        stamp = self.get_clock().now().to_msg()
+
+        poses = PoseArray()
+        poses.header.frame_id = self.base_frame
+        poses.header.stamp = stamp
+        for _, _, xyz in centers:
+            poses.poses.append(self._pose(xyz))
+        self.last_poses = poses
+        self.pub_poses.publish(poses)
+
+        best_conf, best_name, best_xyz = centers[0]
+        best = PoseStamped()
+        best.header.frame_id = self.base_frame
+        best.header.stamp = stamp
+        best.pose = self._pose(best_xyz)
+        self.last_pose = best
+        self.pub_pose.publish(best)
+
+        self.get_logger().info(
+            f'SELECT [{best_name}] conf={best_conf:.2f} of {len(centers)} '
+            f'-> {self.base_frame} '
+            f'({best_xyz[0]:.3f}, {best_xyz[1]:.3f}, {best_xyz[2]:.3f}) m')
+        for _ in range(5):
+            rclpy.spin_once(self, timeout_sec=0.05)
+        return True
+
+    @staticmethod
+    def _pose(xyz):
+        pose = Pose()
+        pose.position.x = float(xyz[0])
+        pose.position.y = float(xyz[1])
+        pose.position.z = float(xyz[2])
+        pose.orientation.w = 1.0
+        return pose
+
+    def _republish_cb(self):
+        if self.last_pose is not None:
+            now = self.get_clock().now().to_msg()
+            self.last_pose.header.stamp = now
+            self.last_poses.header.stamp = now
+            self.pub_pose.publish(self.last_pose)
+            self.pub_poses.publish(self.last_poses)
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = OneShotTarget()
+    ok = False
+    try:
+        ok = node.run_once()
+        if ok and node.republish_hz > 0.0:
+            node.get_logger().info(
+                f'Holding target; re-publishing at {node.republish_hz:.1f} Hz.')
+            node.create_timer(1.0 / node.republish_hz, node._republish_cb)
+            rclpy.spin(node)
+    except (TimeoutError, RuntimeError) as exc:
+        node.get_logger().error(str(exc))
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+    sys.exit(0 if ok else 1)
+
+
+if __name__ == '__main__':
+    main()

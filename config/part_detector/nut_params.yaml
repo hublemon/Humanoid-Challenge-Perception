@@ -1,0 +1,22 @@
+nut_detector:
+  ros__parameters:
+    part_name: nut
+    camera_name: wrist_right
+    image_topic: ""
+    detections_topic: /detections
+    debug_topic: /detector_debug_image/nut
+    frame_id: ""
+    mode: simple
+    parent_class: ""
+    child_class: ""
+    index_by_x: false
+    fit_ellipse: false
+
+    conf_threshold: 0.4
+    iou_threshold: 0.5
+    imgsz: 640
+    publish_debug_image: true
+    smoothing_window_sec: 0.3
+    smoothing_min_ratio: 0.5
+    smoothing_match_dist: 40.0
+    log_detections: true
